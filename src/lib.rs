@@ -1,6 +1,8 @@
 mod commands;
+pub mod pagination;
 
 pub use commands::{MarketfeedCommand, MarketfeedError};
+pub use pagination::{PageLimit, PaginationMeta, SortOrder};
 
 #[cfg(test)]
 mod tests {
