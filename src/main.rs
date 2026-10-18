@@ -38,7 +38,7 @@ mod tests {
     #[googletest::test]
     fn run_cli_default_returns_success() {
         let cli = Cli {
-            cmd: MarketfeedCommand::new(None),
+            cmd: MarketfeedCommand::default(),
         };
         assert_that!(cli.run(), eq(ExitCode::SUCCESS));
     }
