@@ -1,4 +1,7 @@
+pub mod coinmarketcap;
 mod commands;
+pub mod marketstack;
+pub mod oxr;
 pub mod pagination;
 
 pub use commands::{MarketfeedCommand, MarketfeedError};
