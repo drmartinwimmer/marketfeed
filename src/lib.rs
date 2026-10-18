@@ -1,8 +1,10 @@
 pub mod coinmarketcap;
 mod commands;
+pub mod investing;
 pub mod marketstack;
 pub mod oxr;
 pub mod pagination;
+pub mod xetra;
 
 pub use commands::{MarketfeedCommand, MarketfeedError};
 pub use pagination::{PageLimit, PaginationMeta, SortOrder};
