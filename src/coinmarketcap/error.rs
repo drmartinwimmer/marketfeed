@@ -10,6 +10,10 @@ pub(crate) struct CoinmarketcapErrorEnvelope {
 /// Errors that can occur when querying the CoinMarketCap Pro API.
 #[derive(Debug, thiserror::Error)]
 pub enum CoinmarketcapError {
+    /// CoinMarketCap API key was not provided.
+    #[error("missing CoinMarketCap API key")]
+    MissingApiKey,
+
     /// Request did not specify any cryptocurrency symbols.
     #[error("at least one symbol is required for a CoinMarketCap quotes request")]
     MissingSymbols,

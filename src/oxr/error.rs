@@ -25,6 +25,10 @@ impl fmt::Display for OxrServerError {
 /// Errors that can occur when querying the OpenExchangeRates API.
 #[derive(Debug, thiserror::Error)]
 pub enum OxrError {
+    /// OpenExchangeRates App ID was not provided.
+    #[error("missing OpenExchangeRates App ID")]
+    MissingAppId,
+
     /// Base or endpoint URL failed to parse.
     #[error("invalid OpenExchangeRates URL: {0}")]
     InvalidBaseUrl(#[from] url::ParseError),

@@ -28,6 +28,10 @@ pub(crate) struct MarketstackErrorEnvelope {
 /// Errors that can occur when querying the Marketstack API.
 #[derive(Debug, thiserror::Error)]
 pub enum MarketstackError {
+    /// Marketstack access key was not provided.
+    #[error("missing Marketstack access key")]
+    MissingAccessKey,
+
     /// Request did not specify any ticker symbols.
     #[error("at least one symbol is required for a Marketstack EOD request")]
     MissingSymbols,
