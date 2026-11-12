@@ -19,8 +19,13 @@ impl OxrClient {
     ///
     /// # Errors
     ///
-    /// Returns [`OxrError::InvalidBaseUrl`] if the default base URL cannot be parsed.
+    /// Returns [`OxrError::MissingAppId`] if `app_id` is empty or whitespace, or
+    /// [`OxrError::InvalidBaseUrl`] if the default base URL cannot be parsed.
     pub fn new(app_id: impl Into<String>) -> Result<Self, OxrError> {
+        let app_id = app_id.into();
+        if app_id.trim().is_empty() {
+            return Err(OxrError::MissingAppId);
+        }
         let base_url = Url::parse(Self::DEFAULT_BASE_URL)?;
         Ok(Self::with_base_url(app_id, base_url))
     }
@@ -73,6 +78,9 @@ impl OxrClient {
         symbols: &[String],
         alternative: OxrAlternativeMode,
     ) -> Result<OxrRates, OxrError> {
+        if self.app_id.trim().is_empty() {
+            return Err(OxrError::MissingAppId);
+        }
         let mut url = self.base_url.join(path)?;
         {
             let mut query = url.query_pairs_mut();
@@ -238,6 +246,20 @@ mod tests {
         assert_that!(server_err.status, eq(401));
         assert_that!(&server_err.message, eq("invalid_app_id"));
         assert_that!(&server_err.description, eq("Invalid App ID provided."));
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn new_and_latest_reject_empty_or_whitespace_app_id()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        assert_that!(OxrClient::new(""), err(pat!(OxrError::MissingAppId)));
+        assert_that!(OxrClient::new("   "), err(pat!(OxrError::MissingAppId)));
+
+        let client = OxrClient::with_base_url("  ", Url::parse("http://localhost:1234")?);
+        assert_that!(
+            client.latest(&OxrLatestRequest::new()),
+            err(pat!(OxrError::MissingAppId))
+        );
         Ok(())
     }
 }

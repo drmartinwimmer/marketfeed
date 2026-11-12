@@ -35,8 +35,13 @@ impl MarketstackClient {
     ///
     /// # Errors
     ///
-    /// Returns [`MarketstackError::InvalidBaseUrl`] if the default base URL cannot be parsed.
+    /// Returns [`MarketstackError::MissingAccessKey`] if `access_key` is empty or whitespace, or
+    /// [`MarketstackError::InvalidBaseUrl`] if the default base URL cannot be parsed.
     pub fn new(access_key: impl Into<String>) -> Result<Self, MarketstackError> {
+        let access_key = access_key.into();
+        if access_key.trim().is_empty() {
+            return Err(MarketstackError::MissingAccessKey);
+        }
         let base_url = Url::parse(Self::DEFAULT_BASE_URL)?;
         Ok(Self::with_base_url(access_key, base_url))
     }
@@ -55,12 +60,16 @@ impl MarketstackClient {
     ///
     /// # Errors
     ///
-    /// Returns a [`MarketstackError`] if `request.symbols` is empty, the requested page limit
-    /// exceeds [`Self::MAX_PAGE_SIZE`], the HTTP request fails, or Marketstack returns an error.
+    /// Returns a [`MarketstackError`] if the client's access key is empty, `request.symbols` is
+    /// empty, the requested page limit exceeds [`Self::MAX_PAGE_SIZE`], the HTTP request fails, or
+    /// Marketstack returns an error.
     pub fn eod(
         &self,
         request: &MarketstackEodRequest,
     ) -> Result<Vec<MarketstackEodEntry>, MarketstackError> {
+        if self.access_key.trim().is_empty() {
+            return Err(MarketstackError::MissingAccessKey);
+        }
         if request.symbols.is_empty() {
             return Err(MarketstackError::MissingSymbols);
         }
@@ -372,6 +381,27 @@ mod tests {
             contains_substring("valid API Access Key")
         );
         assert_that!(server_err.context, some(anything()));
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn new_and_eod_reject_empty_or_whitespace_access_key()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        assert_that!(
+            MarketstackClient::new(""),
+            err(pat!(MarketstackError::MissingAccessKey))
+        );
+        assert_that!(
+            MarketstackClient::new("   "),
+            err(pat!(MarketstackError::MissingAccessKey))
+        );
+
+        let client = MarketstackClient::with_base_url("  ", Url::parse("http://localhost:1234")?);
+        let request = MarketstackEodRequest::new(["AAPL"]);
+        assert_that!(
+            client.eod(&request),
+            err(pat!(MarketstackError::MissingAccessKey))
+        );
         Ok(())
     }
 }
