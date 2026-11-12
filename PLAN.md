@@ -11,8 +11,8 @@
    - No `Decimal` to `f32` conversions.
    - No filtering out records or flattening multi-currency maps (e.g., CoinMarketCap's `quote` map preserves all returned quote currencies rather than hardcoding `"USD"` and dropping null-priced entries).
    - No injecting synthetic domain fields into parsed records unless part of the source payload.
-3. **Transparent Pagination**: Multi-page HTTP endpoints (such as Marketstack's `offset`/`limit`/`total` pagination) hide their paging loop behind a declarative `Limit` specification (`Items(NonZero<u16>)`, `Pages(NonZero<u8>)`, or `All` with a configurable safety ceiling) and return a unified `Vec<Entry>`.
-4. **Strict Code Hygiene (`purist` & `clippy`)**: Every module, struct, error enum, and test is designed from the ground up to satisfy `purist` AST rules (`<Subject>Error`, `<Subject>Command`, `<Subject>Config`, no free functions, no primitive boolean flag clutter, no `println!` in library code, no env access outside config) and workspace Clippy lints (`unwrap_used = "warn"`, `indexing_slicing = "warn"`, etc.).
+3. **Transparent Pagination**: Multi-page HTTP endpoints (such as Marketstack's `offset`/`limit`/`total` pagination) hide their paging loop behind a declarative `PageLimit` specification (`Items(NonZero<u16>)`, `Pages(NonZero<u8>)`, or `All` with a configurable safety ceiling) and return a unified `Vec<Entry>`.
+4. **Strict Code Hygiene (`purist` & `clippy`)**: Every module, struct, error enum, and test is designed from the ground up to satisfy `purist` AST rules (`<Subject>Error`, `<Subject>Command`, `<Subject>Secrets`, no free functions, no primitive boolean flag clutter, no `println!` in library code, no env access outside config) and workspace Clippy lints (`unwrap_used = "warn"`, `indexing_slicing = "warn"`, etc.).
 
 ---
 
@@ -23,8 +23,8 @@ src/
 ├── lib.rs
 ├── main.rs
 ├── commands.rs          # CLI command definitions and execution (MarketfeedCommand)
-├── config.rs            # CLI / environment credential configuration (MarketfeedConfig)
-├── pagination.rs        # Shared pagination types (Limit, PaginationMeta, Sort)
+├── secrets.rs           # Provider API credentials loading (MarketfeedSecrets)
+├── pagination.rs        # Shared pagination types (PageLimit, PaginationMeta, SortOrder)
 ├── marketstack/         # Marketstack REST API v2 client & types
 │   ├── mod.rs
 │   ├── client.rs
@@ -87,8 +87,9 @@ pub struct PaginationMeta {
 Generalizes `stock::marketstack::endpoint` and `stock::marketstack::eod`:
 
 - **`MarketstackClient`**:
-  - `MarketstackClient::new(access_key: String) -> Result<Self, MarketstackError>`
-  - `MarketstackClient::with_base_url(access_key: String, base_url: Url) -> Self` (enables deterministic `mockito` testing in both `marketfeed` and downstream crates).
+  - `MarketstackClient::new(access_key: impl Into<String>) -> Result<Self, MarketstackError>`
+  - `MarketstackClient::with_base_url(access_key: impl Into<String>, base_url: Url) -> Self` (enables deterministic `mockito` testing in both `marketfeed` and downstream crates).
+  - `MarketstackClient::with_all_pages_ceiling(self, max_pages: NonZero<u16>) -> Self` (configures the maximum page safety ceiling when fetching with `PageLimit::All`, defaulting to `100`).
   - `eod(&self, request: &MarketstackEodRequest) -> Result<Vec<MarketstackEodEntry>, MarketstackError>`: Transparently handles single-page or multi-page (`offset` += `pagination.count` while `offset < pagination.total`) requests according to `request.limit`.
 - **`MarketstackEodRequest`**:
   - Fields: `symbols: Vec<String>`, `limit: Option<PageLimit>`, `sort: Option<SortOrder>`, `date_from: Option<NaiveDate>`, `date_to: Option<NaiveDate>`, `exchange: Option<String>`.
@@ -191,7 +192,7 @@ marketfeed xetra parse --file ENR.csv
 marketfeed investing parse --file GOOG.csv
 ```
 
-API keys can be supplied via `--api-key` / `--access-key` / `--app-id` CLI flags or read from environment variables (`MARKETSTACK_ACCESS_KEY`, `COINMARKETCAP_API_KEY`, `OXR_APP_ID`) inside `src/config.rs`.
+API credentials (`MarketfeedSecrets` in `src/secrets.rs`) are loaded lazily for online provider subcommands from `<config_dir>/marketfeed/secrets.json` by default, or from an explicit JSON file via `--secrets-file <PATH>` (and `MarketfeedSecrets::from_path(path)` / `MarketfeedCommand::run_with_secrets(&secrets)` in library code). Offline CSV subcommands (`xetra`, `investing`) run without loading secrets.
 
 ---
 
@@ -230,5 +231,5 @@ API keys can be supplied via `--api-key` / `--access-key` / `--app-id` CLI flags
 
 ### Milestone 4: CLI Subcommands & Documentation
 
-- Implement `src/config.rs` and `src/commands.rs` wiring `marketstack`, `coinmarketcap`, `oxr`, `xetra`, and `investing` subcommands into the `marketfeed` binary with JSON output formatting.
+- Implement `src/secrets.rs` and `src/commands.rs` wiring `marketstack`, `coinmarketcap`, `oxr`, `xetra`, and `investing` subcommands into the `marketfeed` binary with JSON output formatting.
 - Add end-to-end CLI tests and update `README.md` with library and CLI usage examples.
