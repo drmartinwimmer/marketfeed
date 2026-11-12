@@ -183,6 +183,7 @@ impl MarketstackEodCommand {
         let key = secrets
             .marketstack_access_key
             .as_deref()
+            .filter(|k| !k.trim().is_empty())
             .ok_or(MarketstackError::MissingAccessKey)?;
         let client = match self.base_url {
             Some(base_url) => MarketstackClient::with_base_url(key, base_url),
@@ -251,6 +252,7 @@ impl CoinmarketcapQuotesCommand {
         let key = secrets
             .coinmarketcap_api_key
             .as_deref()
+            .filter(|k| !k.trim().is_empty())
             .ok_or(CoinmarketcapError::MissingApiKey)?;
         let client = match self.base_url {
             Some(base_url) => CoinmarketcapClient::with_base_url(key, base_url),
@@ -310,6 +312,7 @@ impl OxrLatestCommand {
         let app_id = secrets
             .oxr_app_id
             .as_deref()
+            .filter(|k| !k.trim().is_empty())
             .ok_or(OxrError::MissingAppId)?;
         let client = match self.base_url {
             Some(base_url) => OxrClient::with_base_url(app_id, base_url),
@@ -364,6 +367,7 @@ impl OxrHistoricalCommand {
         let app_id = secrets
             .oxr_app_id
             .as_deref()
+            .filter(|k| !k.trim().is_empty())
             .ok_or(OxrError::MissingAppId)?;
         let client = match self.base_url {
             Some(base_url) => OxrClient::with_base_url(app_id, base_url),
@@ -620,6 +624,33 @@ mod tests {
         let oxr_cli = TestCli::try_parse_from(["marketfeed", "oxr", "latest"])?;
         assert_that!(
             oxr_cli.cmd.run_with_secrets(&empty_secrets),
+            err(pat!(MarketfeedError::Oxr(pat!(OxrError::MissingAppId))))
+        );
+
+        let whitespace_secrets = MarketfeedSecrets {
+            marketstack_access_key: Some("   ".to_string()),
+            coinmarketcap_api_key: Some(String::new()),
+            oxr_app_id: Some("\t".to_string()),
+        };
+        let ms_ws =
+            TestCli::try_parse_from(["marketfeed", "marketstack", "eod", "--symbols", "AAPL"])?;
+        assert_that!(
+            ms_ws.cmd.run_with_secrets(&whitespace_secrets),
+            err(pat!(MarketfeedError::Marketstack(pat!(
+                MarketstackError::MissingAccessKey
+            ))))
+        );
+        let cmc_ws =
+            TestCli::try_parse_from(["marketfeed", "coinmarketcap", "quotes", "--symbols", "BTC"])?;
+        assert_that!(
+            cmc_ws.cmd.run_with_secrets(&whitespace_secrets),
+            err(pat!(MarketfeedError::Coinmarketcap(pat!(
+                CoinmarketcapError::MissingApiKey
+            ))))
+        );
+        let oxr_ws = TestCli::try_parse_from(["marketfeed", "oxr", "latest"])?;
+        assert_that!(
+            oxr_ws.cmd.run_with_secrets(&whitespace_secrets),
             err(pat!(MarketfeedError::Oxr(pat!(OxrError::MissingAppId))))
         );
         Ok(())

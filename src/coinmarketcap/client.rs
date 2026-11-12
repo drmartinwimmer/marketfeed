@@ -23,8 +23,13 @@ impl CoinmarketcapClient {
     ///
     /// # Errors
     ///
-    /// Returns [`CoinmarketcapError::InvalidBaseUrl`] if the default base URL cannot be parsed.
+    /// Returns [`CoinmarketcapError::MissingApiKey`] if `api_key` is empty or whitespace, or
+    /// [`CoinmarketcapError::InvalidBaseUrl`] if the default base URL cannot be parsed.
     pub fn new(api_key: impl Into<String>) -> Result<Self, CoinmarketcapError> {
+        let api_key = api_key.into();
+        if api_key.trim().is_empty() {
+            return Err(CoinmarketcapError::MissingApiKey);
+        }
         let base_url = Url::parse(Self::DEFAULT_BASE_URL)?;
         Ok(Self::with_base_url(api_key, base_url))
     }
@@ -43,12 +48,16 @@ impl CoinmarketcapClient {
     ///
     /// # Errors
     ///
-    /// Returns a [`CoinmarketcapError`] if `request.symbols` is empty, the HTTP request fails,
-    /// the payload cannot be deserialized, or CoinMarketCap reports a non-zero `status.error_code`.
+    /// Returns a [`CoinmarketcapError`] if the client's API key is empty, `request.symbols` is
+    /// empty, the HTTP request fails, the payload cannot be deserialized, or CoinMarketCap reports
+    /// a non-zero `status.error_code`.
     pub fn quotes_latest(
         &self,
         request: &CoinmarketcapQuotesRequest,
     ) -> Result<CoinmarketcapQuotesResponse, CoinmarketcapError> {
+        if self.api_key.trim().is_empty() {
+            return Err(CoinmarketcapError::MissingApiKey);
+        }
         if request.symbols.is_empty() {
             return Err(CoinmarketcapError::MissingSymbols);
         }
@@ -283,6 +292,27 @@ mod tests {
                 error_code: eq(&1002_i64),
                 error_message: eq("API key missing."),
             }))
+        );
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn new_and_quotes_latest_reject_empty_or_whitespace_api_key()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        assert_that!(
+            CoinmarketcapClient::new(""),
+            err(pat!(CoinmarketcapError::MissingApiKey))
+        );
+        assert_that!(
+            CoinmarketcapClient::new("   "),
+            err(pat!(CoinmarketcapError::MissingApiKey))
+        );
+
+        let client = CoinmarketcapClient::with_base_url(" ", Url::parse("http://localhost:1234")?);
+        let request = CoinmarketcapQuotesRequest::new(["BTC"]);
+        assert_that!(
+            client.quotes_latest(&request),
+            err(pat!(CoinmarketcapError::MissingApiKey))
         );
         Ok(())
     }
