@@ -176,6 +176,10 @@ pub struct MarketstackEodCommand {
     /// Fetch all available pages up to the safety ceiling.
     #[arg(long, conflicts_with_all = ["limit_items", "limit_pages"])]
     all_pages: bool,
+
+    /// Override the maximum number of pages fetched when `--all-pages` is enabled (default: 100).
+    #[arg(long, requires = "all_pages")]
+    all_pages_ceiling: Option<NonZero<u16>>,
 }
 
 impl MarketstackEodCommand {
@@ -185,10 +189,13 @@ impl MarketstackEodCommand {
             .as_deref()
             .filter(|k| !k.trim().is_empty())
             .ok_or(MarketstackError::MissingAccessKey)?;
-        let client = match self.base_url {
+        let mut client = match self.base_url {
             Some(base_url) => MarketstackClient::with_base_url(key, base_url),
             None => MarketstackClient::new(key)?,
         };
+        if let Some(ceiling) = self.all_pages_ceiling {
+            client = client.with_all_pages_ceiling(ceiling);
+        }
 
         let mut request = MarketstackEodRequest::new(self.symbols);
         if self.all_pages {
@@ -526,7 +533,7 @@ mod tests {
                 Matcher::UrlEncoded("offset".into(), "0".into()),
             ]))
             .with_status(200)
-            .with_body(r#"{"pagination":{"limit":1000,"offset":0,"count":1,"total":1},"data":[{"open":180.0,"high":185.0,"low":179.0,"close":184.0,"volume":1000.0,"symbol":"AAPL","exchange":"XNAS","date":"2025-04-04T00:00:00+0000"}]}"#)
+            .with_body(r#"{"pagination":{"limit":1000,"offset":0,"count":1,"total":3},"data":[{"open":180.0,"high":185.0,"low":179.0,"close":184.0,"volume":1000.0,"symbol":"AAPL","exchange":"XNAS","date":"2025-04-04T00:00:00+0000"}]}"#)
             .create();
 
         let secrets = MarketfeedSecrets {
@@ -544,6 +551,8 @@ mod tests {
             "--date-from",
             "2025-01-01",
             "--all-pages",
+            "--all-pages-ceiling",
+            "1",
             "--base-url",
             &server.url(),
         ])?;
