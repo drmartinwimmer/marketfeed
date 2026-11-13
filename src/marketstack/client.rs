@@ -2,12 +2,13 @@ use crate::marketstack::eod::{MarketstackEodEntry, MarketstackEodRequest, Market
 use crate::marketstack::error::{MarketstackError, MarketstackErrorEnvelope};
 use crate::pagination::PageLimit;
 use reqwest::blocking::Client;
+use std::num::NonZero;
 use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ResolvedPagination {
     page_size: u16,
-    max_pages: u8,
+    max_pages: u16,
 }
 
 /// Synchronous HTTP client for the Marketstack REST API (`/v2/eod`).
@@ -16,6 +17,7 @@ pub struct MarketstackClient {
     http: Client,
     access_key: String,
     base_url: Url,
+    all_pages_ceiling: NonZero<u16>,
 }
 
 impl MarketstackClient {
@@ -28,8 +30,10 @@ impl MarketstackClient {
     /// Maximum items per page supported by Marketstack `/v2/eod`.
     pub const MAX_PAGE_SIZE: u16 = 1000;
 
-    /// Safety ceiling on page count when fetching with [`PageLimit::All`].
-    pub const ALL_PAGES_SAFETY_CEILING: u8 = 100;
+    /// Default safety ceiling on page count when fetching with [`PageLimit::All`].
+    pub const ALL_PAGES_SAFETY_CEILING: u16 = 100;
+
+    const DEFAULT_ALL_PAGES_CEILING: NonZero<u16> = NonZero::<u16>::MIN.saturating_add(99);
 
     /// Creates a new [`MarketstackClient`] targeting [`Self::DEFAULT_BASE_URL`].
     ///
@@ -53,7 +57,16 @@ impl MarketstackClient {
             http: Client::new(),
             access_key: access_key.into(),
             base_url,
+            all_pages_ceiling: Self::DEFAULT_ALL_PAGES_CEILING,
         }
+    }
+
+    /// Overrides the safety ceiling on the maximum number of pages fetched when using
+    /// [`PageLimit::All`] (defaults to [`Self::ALL_PAGES_SAFETY_CEILING`]).
+    #[must_use]
+    pub const fn with_all_pages_ceiling(mut self, max_pages: NonZero<u16>) -> Self {
+        self.all_pages_ceiling = max_pages;
+        self
     }
 
     /// Queries the `/v2/eod` endpoint and transparently paginates according to `request.limit`.
@@ -74,7 +87,7 @@ impl MarketstackClient {
             return Err(MarketstackError::MissingSymbols);
         }
 
-        let pagination = Self::resolve_pagination(request.limit)?;
+        let pagination = self.resolve_pagination(request.limit)?;
         let mut entries = Vec::new();
         let mut offset = 0_u32;
 
@@ -92,6 +105,7 @@ impl MarketstackClient {
     }
 
     const fn resolve_pagination(
+        &self,
         limit: Option<PageLimit>,
     ) -> Result<ResolvedPagination, MarketstackError> {
         match limit {
@@ -115,11 +129,11 @@ impl MarketstackClient {
             }
             Some(PageLimit::Pages(pages)) => Ok(ResolvedPagination {
                 page_size: Self::MAX_PAGE_SIZE,
-                max_pages: pages.get(),
+                max_pages: pages.get() as u16,
             }),
             Some(PageLimit::All) => Ok(ResolvedPagination {
                 page_size: Self::MAX_PAGE_SIZE,
-                max_pages: Self::ALL_PAGES_SAFETY_CEILING,
+                max_pages: self.all_pages_ceiling.get(),
             }),
         }
     }
@@ -186,7 +200,6 @@ mod tests {
     use googletest::prelude::*;
     use mockito::{Matcher, Server};
     use rust_decimal::Decimal;
-    use std::num::NonZero;
     use std::str::FromStr;
 
     #[googletest::test]
@@ -402,6 +415,61 @@ mod tests {
             client.eod(&request),
             err(pat!(MarketstackError::MissingAccessKey))
         );
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn eod_all_pages_respects_configured_safety_ceiling()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut server = Server::new();
+        let page1 = r#"{
+            "pagination": { "limit": 1000, "offset": 0, "count": 1, "total": 5 },
+            "data": [{
+                "open": 100.0, "high": 105.0, "low": 99.0, "close": 104.0, "volume": 1000.0,
+                "symbol": "AAPL", "exchange": "XNAS", "date": "2025-04-04T00:00:00+0000"
+            }]
+        }"#;
+        let page2 = r#"{
+            "pagination": { "limit": 1000, "offset": 1, "count": 1, "total": 5 },
+            "data": [{
+                "open": 98.0, "high": 101.0, "low": 97.0, "close": 100.0, "volume": 900.0,
+                "symbol": "AAPL", "exchange": "XNAS", "date": "2025-04-03T00:00:00+0000"
+            }]
+        }"#;
+
+        let mock1 = server
+            .mock("GET", "/v2/eod")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("access_key".into(), "key".into()),
+                Matcher::UrlEncoded("symbols".into(), "AAPL".into()),
+                Matcher::UrlEncoded("limit".into(), "1000".into()),
+                Matcher::UrlEncoded("offset".into(), "0".into()),
+            ]))
+            .with_status(200)
+            .with_body(page1)
+            .create();
+
+        let mock2 = server
+            .mock("GET", "/v2/eod")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("access_key".into(), "key".into()),
+                Matcher::UrlEncoded("symbols".into(), "AAPL".into()),
+                Matcher::UrlEncoded("limit".into(), "1000".into()),
+                Matcher::UrlEncoded("offset".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(page2)
+            .create();
+
+        let ceiling = NonZero::new(2_u16).ok_or("nonzero ceiling")?;
+        let client = MarketstackClient::with_base_url("key", Url::parse(&server.url())?)
+            .with_all_pages_ceiling(ceiling);
+        let request = MarketstackEodRequest::new(["AAPL"]).with_limit(PageLimit::All);
+        let entries = client.eod(&request)?;
+
+        mock1.assert();
+        mock2.assert();
+        assert_that!(entries.len(), eq(2));
         Ok(())
     }
 }
