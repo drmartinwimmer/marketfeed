@@ -1,11 +1,7 @@
 use chrono::NaiveDate;
 use googletest::prelude::*;
-use marketfeed::coinmarketcap::CoinmarketcapQuotesResponse;
 use marketfeed::investing::InvestingEntry;
-use marketfeed::marketstack::MarketstackEodEntry;
-use marketfeed::oxr::OxrRates;
 use marketfeed::xetra::XetraEntry;
-use mockito::{Matcher, Server};
 use rust_decimal::Decimal;
 use std::fs;
 use std::process::Command;
@@ -37,6 +33,32 @@ fn run_cli_without_subcommand_and_with_help_succeeds()
     assert_that!(&help_text, contains_substring("xetra"));
     assert_that!(&help_text, contains_substring("investing"));
     assert_that!(&help_text, contains_substring("--secrets-file"));
+
+    for args in [
+        &["marketstack", "eod", "--help"][..],
+        &["coinmarketcap", "quotes", "--help"][..],
+        &["oxr", "latest", "--help"][..],
+        &["oxr", "historical", "--help"][..],
+    ] {
+        let sub_help = marketfeed_cmd().args(args).output()?;
+        assert_that!(sub_help.status.code(), some(eq(0)));
+        let sub_help_text = String::from_utf8(sub_help.stdout)?;
+        assert_that!(&sub_help_text, not(contains_substring("--base-url")));
+    }
+
+    let rejected_flag = marketfeed_cmd()
+        .args([
+            "marketstack",
+            "eod",
+            "--symbols",
+            "AAPL",
+            "--base-url",
+            "https://example.invalid",
+        ])
+        .output()?;
+    assert_that!(rejected_flag.status.success(), is_false());
+    let rejected_stderr = String::from_utf8(rejected_flag.stderr)?;
+    assert_that!(&rejected_stderr, contains_substring("--base-url"));
     Ok(())
 }
 
@@ -111,127 +133,44 @@ fn parse_csv_subcommands_output_typed_json_without_loading_broken_default_secret
 }
 
 #[googletest::test]
-fn query_online_providers_end_to_end_outputs_valid_json()
+fn online_subcommands_resolve_custom_and_xdg_secrets_files()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
-    let secrets_file = temp_dir.path().join("custom-secrets.json");
+    let custom_secrets = temp_dir.path().join("custom-secrets.json");
     fs::write(
-        &secrets_file,
-        r#"{
-            "marketstack_access_key": "e2e-ms-key",
-            "coinmarketcap_api_key": "e2e-cmc-key",
-            "oxr_app_id": "e2e-oxr-id"
-        }"#,
+        &custom_secrets,
+        r#"{"marketstack_access_key": "present-ms-key"}"#,
     )?;
-
-    let mut server = Server::new();
-    let ms_mock = server
-        .mock("GET", "/v2/eod")
-        .match_query(Matcher::AllOf(vec![
-            Matcher::UrlEncoded("access_key".into(), "e2e-ms-key".into()),
-            Matcher::UrlEncoded("symbols".into(), "AAPL".into()),
-            Matcher::UrlEncoded("limit".into(), "1000".into()),
-            Matcher::UrlEncoded("offset".into(), "0".into()),
-        ]))
-        .with_status(200)
-        .with_body(r#"{"pagination":{"limit":1000,"offset":0,"count":1,"total":4},"data":[{"open":188.5,"high":191.0,"low":187.25,"close":190.15,"volume":45000.0,"symbol":"AAPL","exchange":"XNAS","date":"2025-04-04T00:00:00+0000"}]}"#)
-        .create();
-
-    let ms_out = marketfeed_cmd()
-        .arg("--secrets-file")
-        .arg(&secrets_file)
-        .args([
-            "marketstack",
-            "eod",
-            "--symbols",
-            "AAPL",
-            "--all-pages",
-            "--all-pages-ceiling",
-            "1",
-            "--base-url",
-            &server.url(),
-        ])
-        .output()?;
-    ms_mock.assert();
-    assert_that!(ms_out.status.code(), some(eq(0)));
-    assert_that!(ms_out.stderr.is_empty(), is_true());
-
-    let ms_entries: Vec<MarketstackEodEntry> = serde_json::from_slice(&ms_out.stdout)?;
-    assert_that!(ms_entries.len(), eq(1));
-    let first_ms = ms_entries.first().ok_or("missing marketstack entry")?;
-    assert_that!(&first_ms.symbol, eq("AAPL"));
-    assert_that!(first_ms.close, eq(Decimal::from_str("190.15")?));
-
-    let cmc_mock = server
-        .mock("GET", "/v2/cryptocurrency/quotes/latest")
-        .match_header("X-CMC_PRO_API_KEY", "e2e-cmc-key")
-        .match_query(Matcher::AllOf(vec![
-            Matcher::UrlEncoded("symbol".into(), "BTC".into()),
-            Matcher::UrlEncoded("convert".into(), "USD".into()),
-        ]))
-        .with_status(200)
-        .with_body(r#"{"status":{"timestamp":"2025-04-04T12:00:00.000Z","error_code":0,"elapsed":5,"credit_count":1},"data":{"BTC":[{"id":1,"name":"Bitcoin","symbol":"BTC","slug":"bitcoin","quote":{"USD":{"price":84250.5}}}]}}"#)
-        .create();
 
     let cmc_out = marketfeed_cmd()
         .arg("--secrets-file")
-        .arg(&secrets_file)
-        .args([
-            "coinmarketcap",
-            "quotes",
-            "--symbols",
-            "BTC",
-            "--convert",
-            "USD",
-            "--base-url",
-            &server.url(),
-        ])
+        .arg(&custom_secrets)
+        .args(["coinmarketcap", "quotes", "--symbols", "BTC"])
         .output()?;
-    cmc_mock.assert();
-    assert_that!(cmc_out.status.code(), some(eq(0)));
-    let cmc_resp: CoinmarketcapQuotesResponse = serde_json::from_slice(&cmc_out.stdout)?;
-    let btc = cmc_resp
-        .data
-        .get("BTC")
-        .and_then(|items| items.first())
-        .ok_or("missing BTC quote")?;
-    assert_that!(&btc.name, eq("Bitcoin"));
+    assert_that!(cmc_out.status.code(), some(eq(2)));
+    let cmc_stderr = String::from_utf8(cmc_out.stderr)?;
+    assert_that!(
+        &cmc_stderr,
+        contains_substring("Error: missing CoinMarketCap API key")
+    );
 
-    // Also verify default `<XDG_CONFIG_HOME>/marketfeed/secrets.json` resolution without `--secrets-file`
     let default_cfg_dir = temp_dir.path().join("xdg").join("marketfeed");
     fs::create_dir_all(&default_cfg_dir)?;
     fs::write(
         default_cfg_dir.join("secrets.json"),
-        r#"{"oxr_app_id": "xdg-oxr-id"}"#,
+        r#"{"coinmarketcap_api_key": "present-cmc-key"}"#,
     )?;
-
-    let oxr_mock = server
-        .mock("GET", "/api/latest.json")
-        .match_query(Matcher::AllOf(vec![
-            Matcher::UrlEncoded("app_id".into(), "xdg-oxr-id".into()),
-            Matcher::UrlEncoded("show_alternative".into(), "false".into()),
-        ]))
-        .with_status(200)
-        .with_body(r#"{"disclaimer":"d","license":"l","timestamp":1743768000,"base":"USD","rates":{"EUR":0.9125}}"#)
-        .create();
 
     let oxr_out = marketfeed_cmd()
         .env("HOME", temp_dir.path().join("xdg"))
         .env("XDG_CONFIG_HOME", temp_dir.path().join("xdg"))
-        .args([
-            "oxr",
-            "latest",
-            "--standard-only",
-            "--base-url",
-            &server.url(),
-        ])
+        .args(["oxr", "latest", "--standard-only"])
         .output()?;
-    oxr_mock.assert();
-    assert_that!(oxr_out.status.code(), some(eq(0)));
-    let oxr_rates: OxrRates = serde_json::from_slice(&oxr_out.stdout)?;
+    assert_that!(oxr_out.status.code(), some(eq(2)));
+    let oxr_stderr = String::from_utf8(oxr_out.stderr)?;
     assert_that!(
-        oxr_rates.rates.get("EUR"),
-        some(eq(&Decimal::from_str("0.9125")?))
+        &oxr_stderr,
+        contains_substring("Error: missing OpenExchangeRates App ID")
     );
     Ok(())
 }
