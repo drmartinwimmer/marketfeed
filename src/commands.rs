@@ -9,7 +9,7 @@ use chrono::NaiveDate;
 use clap::{Args, Subcommand};
 use std::io;
 use std::num::NonZero;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use url::Url;
 
 /// Error type for `marketfeed` CLI command execution.
@@ -51,23 +51,37 @@ pub enum MarketfeedError {
 /// Top-level command-line arguments for `marketfeed`.
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct MarketfeedCommand {
+    /// Optional path to a JSON file containing provider API credentials.
+    #[arg(long, global = true)]
+    secrets_file: Option<PathBuf>,
+
     /// Optional provider subcommand to execute.
     #[command(subcommand)]
     subcommand: Option<ProviderSubcommand>,
 }
 
 impl MarketfeedCommand {
-    /// Executes the command using secrets from the default configuration path and writes JSON to `stdout`.
+    /// Executes the command, loading secrets lazily only for online provider subcommands
+    /// (from `--secrets-file` if supplied, or from the default configuration path otherwise),
+    /// and writes JSON to `stdout`.
     ///
     /// # Errors
     ///
     /// Returns a [`MarketfeedError`] if command execution fails.
     pub fn run(self) -> Result<(), MarketfeedError> {
-        let secrets = MarketfeedSecrets::from_default_path()?;
-        self.run_with_secrets(&secrets)
+        if let Some(subcommand) = self.subcommand {
+            let json_output = subcommand.run_loading_secrets(self.secrets_file.as_deref())?;
+            println!("{json_output}");
+        }
+        Ok(())
     }
 
-    fn run_with_secrets(self, secrets: &MarketfeedSecrets) -> Result<(), MarketfeedError> {
+    /// Executes the command using the provided [`MarketfeedSecrets`] and writes JSON to `stdout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`MarketfeedError`] if command execution fails.
+    pub fn run_with_secrets(self, secrets: &MarketfeedSecrets) -> Result<(), MarketfeedError> {
         if let Some(subcommand) = self.subcommand {
             let json_output = subcommand.run(secrets)?;
             println!("{json_output}");
@@ -112,6 +126,32 @@ pub enum ProviderSubcommand {
 }
 
 impl ProviderSubcommand {
+    fn load_secrets(secrets_file: Option<&Path>) -> Result<MarketfeedSecrets, MarketfeedError> {
+        match secrets_file {
+            Some(path) => Ok(MarketfeedSecrets::from_path(path)?),
+            None => Ok(MarketfeedSecrets::from_default_path()?),
+        }
+    }
+
+    fn run_loading_secrets(self, secrets_file: Option<&Path>) -> Result<String, MarketfeedError> {
+        match self {
+            Self::Marketstack { action } => {
+                let secrets = Self::load_secrets(secrets_file)?;
+                action.run(&secrets)
+            }
+            Self::Coinmarketcap { action } => {
+                let secrets = Self::load_secrets(secrets_file)?;
+                action.run(&secrets)
+            }
+            Self::Oxr { action } => {
+                let secrets = Self::load_secrets(secrets_file)?;
+                action.run(&secrets)
+            }
+            Self::Xetra { action } => action.run(),
+            Self::Investing { action } => action.run(),
+        }
+    }
+
     fn run(self, secrets: &MarketfeedSecrets) -> Result<String, MarketfeedError> {
         match self {
             Self::Marketstack { action } => action.run(secrets),
@@ -662,6 +702,80 @@ mod tests {
             oxr_ws.cmd.run_with_secrets(&whitespace_secrets),
             err(pat!(MarketfeedError::Oxr(pat!(OxrError::MissingAppId))))
         );
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn run_skips_secrets_loading_for_offline_commands_and_loads_secrets_file_for_online()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDir::new()?;
+        let missing_secrets = temp_dir.path().join("does-not-exist.json");
+        let xetra_path = temp_dir.path().join("ENR.csv");
+        fs::write(
+            &xetra_path,
+            concat!(
+                "Date;Open;Close;High;Low;Volume;Volume units\n",
+                "04/04/25;42.10;43.50;44.00;41.80;1000;20\n",
+            ),
+        )?;
+
+        let offline_cli = TestCli::try_parse_from([
+            "marketfeed",
+            "--secrets-file",
+            &missing_secrets.to_string_lossy(),
+            "xetra",
+            "parse",
+            "--file",
+            &xetra_path.to_string_lossy(),
+        ])?;
+        assert_that!(offline_cli.cmd.run(), ok(anything()));
+
+        let online_missing = TestCli::try_parse_from([
+            "marketfeed",
+            "--secrets-file",
+            &missing_secrets.to_string_lossy(),
+            "oxr",
+            "latest",
+        ])?;
+        assert_that!(
+            online_missing.cmd.run(),
+            err(pat!(MarketfeedError::Secrets(pat!(
+                MarketfeedSecretsError::Io { .. }
+            ))))
+        );
+
+        let secrets_path = temp_dir.path().join("secrets.json");
+        fs::write(&secrets_path, r#"{"marketstack_access_key": "file-ms"}"#)?;
+
+        let mut server = Server::new();
+        let ms_mock = server
+            .mock("GET", "/v2/eod")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("access_key".into(), "file-ms".into()),
+                Matcher::UrlEncoded("symbols".into(), "AAPL".into()),
+                Matcher::UrlEncoded("limit".into(), "1000".into()),
+                Matcher::UrlEncoded("offset".into(), "0".into()),
+            ]))
+            .with_status(200)
+            .with_body(r#"{"pagination":{"limit":1000,"offset":0,"count":1,"total":3},"data":[{"open":180.0,"high":185.0,"low":179.0,"close":184.0,"volume":1000.0,"symbol":"AAPL","exchange":"XNAS","date":"2025-04-04T00:00:00+0000"}]}"#)
+            .create();
+
+        let ms_cli = TestCli::try_parse_from([
+            "marketfeed",
+            "marketstack",
+            "eod",
+            "--secrets-file",
+            &secrets_path.to_string_lossy(),
+            "--symbols",
+            "AAPL",
+            "--all-pages",
+            "--all-pages-ceiling",
+            "1",
+            "--base-url",
+            &server.url(),
+        ])?;
+        assert_that!(ms_cli.cmd.run(), ok(anything()));
+        ms_mock.assert();
         Ok(())
     }
 }

@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## CLI & Secrets Configuration
 
-`marketfeed` loads API credentials (`MarketfeedSecrets`) from `<config_dir>/marketfeed/secrets.json` in the user's home configuration directory (e.g. `~/.config/marketfeed/secrets.json` via `MarketfeedSecrets::from_default_path()`), or from a custom path in Rust via `MarketfeedSecrets::from_path(path)`:
+`marketfeed` loads API credentials (`MarketfeedSecrets`) lazily for online provider subcommands from `<config_dir>/marketfeed/secrets.json` in the user's home configuration directory (e.g. `~/.config/marketfeed/secrets.json` via `MarketfeedSecrets::from_default_path()`), or from a custom JSON file via `--secrets-file <PATH>` on the CLI (`MarketfeedSecrets::from_path(path)` in Rust):
 
 ```json
 {
