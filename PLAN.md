@@ -232,4 +232,4 @@ API credentials (`MarketfeedSecrets` in `src/secrets.rs`) are loaded lazily for 
 ### Milestone 4: CLI Subcommands & Documentation
 
 - Implement `src/secrets.rs` and `src/commands.rs` wiring `marketstack`, `coinmarketcap`, `oxr`, `xetra`, and `investing` subcommands into the `marketfeed` binary with JSON output formatting.
-- Add end-to-end CLI tests and update `README.md` with library and CLI usage examples.
+- Add end-to-end CLI tests (`tests/cli_e2e.rs`) and update `README.md` with library and CLI usage examples.
