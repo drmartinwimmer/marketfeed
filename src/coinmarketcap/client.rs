@@ -31,12 +31,17 @@ impl CoinmarketcapClient {
             return Err(CoinmarketcapError::MissingApiKey);
         }
         let base_url = Url::parse(Self::DEFAULT_BASE_URL)?;
-        Ok(Self::with_base_url(api_key, base_url))
+        Ok(Self {
+            http: Client::new(),
+            api_key,
+            base_url,
+        })
     }
 
-    /// Creates a new [`CoinmarketcapClient`] with a custom `base_url` (e.g. for mock testing).
+    /// Creates a new [`CoinmarketcapClient`] with a custom `base_url` for mock testing.
+    #[cfg(test)]
     #[must_use]
-    pub fn with_base_url(api_key: impl Into<String>, base_url: Url) -> Self {
+    pub(crate) fn with_base_url(api_key: impl Into<String>, base_url: Url) -> Self {
         Self {
             http: Client::new(),
             api_key: api_key.into(),
