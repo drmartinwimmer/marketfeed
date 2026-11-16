@@ -52,7 +52,7 @@ impl XetraCsvReader {
             if trimmed.is_empty() {
                 continue;
             }
-            if trimmed.starts_with("Xetra;") {
+            if Self::is_preamble_line(trimmed) {
                 let mut header_buf = String::new();
                 let header_bytes = reader.read_line(&mut header_buf)?;
                 if header_bytes == 0 {
@@ -79,6 +79,19 @@ impl XetraCsvReader {
         }
 
         Ok(entries)
+    }
+
+    fn is_preamble_line(trimmed: &str) -> bool {
+        if !trimmed.contains(';') {
+            return false;
+        }
+        let first_cell = trimmed
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"');
+        first_cell.eq_ignore_ascii_case("xetra")
     }
 
     fn parse_record(record: &StringRecord, line: usize) -> Result<XetraEntry, XetraError> {
@@ -190,6 +203,30 @@ mod tests {
         assert_that!(first.low, eq(Decimal::from_str("41.80")?));
         assert_that!(first.volume, eq(1_234_567));
         assert_that!(first.volume_units, eq(28_500));
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn read_str_parses_quoted_xetra_preamble_and_headers()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let csv = concat!(
+            "\"Xetra\";\"DE000ENER6Y0\";\"\";\"\";\"\";\"\";\"\"\n",
+            "\"Date\";\"Open\";\"Close\";\"High\";\"Low\";\"Volume\";\"Volume units\"\n",
+            "\"30/12/25\";\"120.00\";\"120.40\";\"120.50\";\"119.15\";\"83,153,935\";\"691,887\"\n",
+        );
+
+        let entries = XetraCsvReader::read_str(csv)?;
+        assert_that!(entries.len(), eq(1));
+
+        let first = entries.first().ok_or("missing first entry")?;
+        let expected_date = NaiveDate::from_ymd_opt(2025, 12, 30).ok_or("invalid date")?;
+        assert_that!(first.date, eq(expected_date));
+        assert_that!(first.open, eq(Decimal::from_str("120.00")?));
+        assert_that!(first.close, eq(Decimal::from_str("120.40")?));
+        assert_that!(first.high, eq(Decimal::from_str("120.50")?));
+        assert_that!(first.low, eq(Decimal::from_str("119.15")?));
+        assert_that!(first.volume, eq(83_153_935));
+        assert_that!(first.volume_units, eq(691_887));
         Ok(())
     }
 
