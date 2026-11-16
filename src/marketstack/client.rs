@@ -47,12 +47,18 @@ impl MarketstackClient {
             return Err(MarketstackError::MissingAccessKey);
         }
         let base_url = Url::parse(Self::DEFAULT_BASE_URL)?;
-        Ok(Self::with_base_url(access_key, base_url))
+        Ok(Self {
+            http: Client::new(),
+            access_key,
+            base_url,
+            all_pages_ceiling: Self::DEFAULT_ALL_PAGES_CEILING,
+        })
     }
 
-    /// Creates a new [`MarketstackClient`] with a custom `base_url` (e.g. for mock testing).
+    /// Creates a new [`MarketstackClient`] with a custom `base_url` for mock testing.
+    #[cfg(test)]
     #[must_use]
-    pub fn with_base_url(access_key: impl Into<String>, base_url: Url) -> Self {
+    pub(crate) fn with_base_url(access_key: impl Into<String>, base_url: Url) -> Self {
         Self {
             http: Client::new(),
             access_key: access_key.into(),

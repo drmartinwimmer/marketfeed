@@ -88,7 +88,7 @@ Generalizes `stock::marketstack::endpoint` and `stock::marketstack::eod`:
 
 - **`MarketstackClient`**:
   - `MarketstackClient::new(access_key: impl Into<String>) -> Result<Self, MarketstackError>`
-  - `MarketstackClient::with_base_url(access_key: impl Into<String>, base_url: Url) -> Self` (enables deterministic `mockito` testing in both `marketfeed` and downstream crates).
+  - `#[cfg(test)] pub(crate) fn with_base_url(access_key: impl Into<String>, base_url: Url) -> Self` (test-only constructor enabling deterministic `mockito` unit tests without exposing base URL overrides in the public API).
   - `MarketstackClient::with_all_pages_ceiling(self, max_pages: NonZero<u16>) -> Self` (configures the maximum page safety ceiling when fetching with `PageLimit::All`, defaulting to `100`).
   - `eod(&self, request: &MarketstackEodRequest) -> Result<Vec<MarketstackEodEntry>, MarketstackError>`: Transparently handles single-page or multi-page (`offset` += `pagination.count` while `offset < pagination.total`) requests according to `request.limit`.
 - **`MarketstackEodRequest`**:
@@ -104,7 +104,7 @@ Generalizes `stock::coinmarketcap::endpoint` and `stock::coinmarketcap::quote`:
 
 - **`CoinmarketcapClient`**:
   - `CoinmarketcapClient::new(api_key: String) -> Result<Self, CoinmarketcapError>`
-  - `CoinmarketcapClient::with_base_url(api_key: String, base_url: Url) -> Self`
+  - `#[cfg(test)] pub(crate) fn with_base_url(api_key: String, base_url: Url) -> Self` (test-only constructor for `mockito` unit tests)
   - `quotes_latest(&self, request: &CoinmarketcapQuotesRequest) -> Result<CoinmarketcapQuotesResponse, CoinmarketcapError>`
 - **`CoinmarketcapQuotesRequest`**:
   - Supports querying by `symbols: Vec<String>` (with optional `convert: Vec<String>` currencies) rather than hardcoding USD-only lookups.
@@ -119,7 +119,7 @@ Generalizes `stock::oxr::endpoint` and `stock::oxr::data`:
 
 - **`OxrClient`**:
   - `OxrClient::new(app_id: String) -> Result<Self, OxrError>`
-  - `OxrClient::with_base_url(app_id: String, base_url: Url) -> Self`
+  - `#[cfg(test)] pub(crate) fn with_base_url(app_id: String, base_url: Url) -> Self` (test-only constructor for `mockito` unit tests)
   - `latest(&self, request: &OxrLatestRequest) -> Result<OxrRates, OxrError>`
   - `historical(&self, request: &OxrHistoricalRequest) -> Result<OxrRates, OxrError>`
 - **`OxrLatestRequest` & `OxrHistoricalRequest`**:
