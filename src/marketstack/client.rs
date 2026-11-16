@@ -280,8 +280,8 @@ mod tests {
         let first = entries.first().ok_or("expected entry")?;
         assert_that!(&first.symbol, eq("AAPL"));
         assert_that!(&first.exchange, eq("XNAS"));
-        assert_that!(first.close, eq(Decimal::from_str("190.15")?));
-        assert_that!(first.open, eq(Decimal::from_str("188.5")?));
+        assert_that!(first.close, some(eq(Decimal::from_str("190.15")?)));
+        assert_that!(first.open, some(eq(Decimal::from_str("188.5")?)));
         assert_that!(first.name.as_deref(), some(eq("Apple Inc")));
         assert_that!(first.price_currency.as_deref(), some(eq("USD")));
         Ok(())
@@ -339,8 +339,8 @@ mod tests {
         assert_that!(entries.len(), eq(2));
         let first = entries.first().ok_or("missing first")?;
         let second = entries.get(1).ok_or("missing second")?;
-        assert_that!(first.close, eq(Decimal::from(104)));
-        assert_that!(second.close, eq(Decimal::from(100)));
+        assert_that!(first.close, some(eq(Decimal::from(104))));
+        assert_that!(second.close, some(eq(Decimal::from(100))));
         Ok(())
     }
 

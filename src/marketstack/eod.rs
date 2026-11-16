@@ -1,8 +1,7 @@
 use crate::pagination::{PageLimit, PaginationMeta, SortOrder};
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
-use serde::de::Error as DeError;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 /// Request parameters for querying Marketstack's `/v2/eod` endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -75,62 +74,38 @@ impl MarketstackEodRequest {
     }
 }
 
-/// Serde adapter for Marketstack timestamps (`%Y-%m-%dT%H:%M:%S%z` or RFC 3339).
-struct MarketstackTimestampFormat;
-
-impl MarketstackTimestampFormat {
-    fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        if let Ok(dt) = DateTime::parse_from_str(&raw, "%Y-%m-%dT%H:%M:%S%z") {
-            return Ok(dt.with_timezone(&Utc));
-        }
-        DateTime::parse_from_rfc3339(&raw)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(DeError::custom)
-    }
-
-    fn serialize<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_rfc3339())
-    }
-}
-
 /// Single end-of-day (EOD) market data record returned by Marketstack `/v2/eod`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MarketstackEodEntry {
     /// Trading session timestamp in UTC.
-    #[serde(
-        deserialize_with = "MarketstackTimestampFormat::deserialize",
-        serialize_with = "MarketstackTimestampFormat::serialize"
-    )]
     pub date: DateTime<Utc>,
     /// Unadjusted opening price.
-    pub open: Decimal,
+    #[serde(default)]
+    pub open: Option<Decimal>,
     /// Split- and dividend-adjusted opening price.
     #[serde(default)]
     pub adj_open: Option<Decimal>,
     /// Unadjusted closing price.
-    pub close: Decimal,
+    #[serde(default)]
+    pub close: Option<Decimal>,
     /// Split- and dividend-adjusted closing price.
     #[serde(default)]
     pub adj_close: Option<Decimal>,
     /// Unadjusted session high price.
-    pub high: Decimal,
+    #[serde(default)]
+    pub high: Option<Decimal>,
     /// Split- and dividend-adjusted session high price.
     #[serde(default)]
     pub adj_high: Option<Decimal>,
     /// Unadjusted session low price.
-    pub low: Decimal,
+    #[serde(default)]
+    pub low: Option<Decimal>,
     /// Split- and dividend-adjusted session low price.
     #[serde(default)]
     pub adj_low: Option<Decimal>,
     /// Unadjusted trading volume.
-    pub volume: Decimal,
+    #[serde(default)]
+    pub volume: Option<Decimal>,
     /// Split-adjusted trading volume.
     #[serde(default)]
     pub adj_volume: Option<Decimal>,
@@ -165,4 +140,51 @@ pub struct MarketstackEodResponse {
     pub pagination: PaginationMeta,
     /// EOD entries contained in the current page.
     pub data: Vec<MarketstackEodEntry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use googletest::prelude::*;
+    use std::str::FromStr;
+
+    #[googletest::test]
+    fn eod_entry_deserializes_nullable_ohlcv_and_serializes_utc_z_timestamp()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let marketstack_json = r#"{
+            "date": "2025-08-20T00:00:00+0000",
+            "open": null,
+            "adj_open": null,
+            "close": 190.15,
+            "adj_close": null,
+            "high": null,
+            "adj_high": null,
+            "low": null,
+            "adj_low": null,
+            "volume": null,
+            "adj_volume": null,
+            "split_factor": null,
+            "dividend": null,
+            "name": "BAR_NAME",
+            "symbol": "BAR",
+            "exchange": "XNYS",
+            "exchange_code": "NYSE",
+            "asset_type": null,
+            "price_currency": "USD"
+        }"#;
+
+        let entry: MarketstackEodEntry = serde_json::from_str(marketstack_json)?;
+        assert_that!(entry.open, none());
+        assert_that!(entry.high, none());
+        assert_that!(entry.low, none());
+        assert_that!(entry.volume, none());
+        assert_that!(entry.close, some(eq(Decimal::from_str("190.15")?)));
+
+        let serialized = serde_json::to_string(&entry)?;
+        assert_that!(&serialized, contains_substring("\"2025-08-20T00:00:00Z\""));
+
+        let roundtrip: MarketstackEodEntry = serde_json::from_str(&serialized)?;
+        assert_that!(&roundtrip, eq(&entry));
+        Ok(())
+    }
 }
