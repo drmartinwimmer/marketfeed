@@ -22,8 +22,8 @@
 src/
 ├── lib.rs
 ├── main.rs
-├── commands.rs          # CLI command definitions and execution (MarketfeedCommand)
-├── secrets.rs           # Provider API credentials loading (MarketfeedSecrets)
+├── commands.rs          # Binary-only CLI command definitions and execution (MarketfeedCommand)
+├── secrets.rs           # Shared provider API credentials loading (MarketfeedSecrets)
 ├── pagination.rs        # Shared pagination types (PageLimit, PaginationMeta, SortOrder)
 ├── marketstack/         # Marketstack REST API v2 client & types
 │   ├── mod.rs
@@ -192,7 +192,7 @@ marketfeed xetra parse --file ENR.csv
 marketfeed investing parse --file GOOG.csv
 ```
 
-API credentials (`MarketfeedSecrets` in `src/secrets.rs`) are loaded lazily for online provider subcommands from `<config_dir>/marketfeed/secrets.json` by default, or from an explicit JSON file via `--secrets-file <PATH>` (and `MarketfeedSecrets::from_path(path)` / `MarketfeedCommand::run_with_secrets(&secrets)` in library code). Offline CSV subcommands (`xetra`, `investing`) run without loading secrets.
+API credentials (`MarketfeedSecrets` in `src/secrets.rs`) are part of the library so all binaries built on `marketfeed` share the same secrets configuration. In the CLI, credentials are loaded lazily for online provider subcommands from `<config_dir>/marketfeed/secrets.json` by default (`MarketfeedSecrets::from_default_path()`), or from an explicit JSON file via `--secrets-file <PATH>` (`MarketfeedSecrets::from_path(path)`). Offline CSV subcommands (`xetra`, `investing`) run without loading secrets.
 
 ---
 

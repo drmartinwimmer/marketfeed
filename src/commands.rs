@@ -1,21 +1,26 @@
-use crate::coinmarketcap::{CoinmarketcapClient, CoinmarketcapError, CoinmarketcapQuotesRequest};
-use crate::investing::{InvestingCsvReader, InvestingError};
-use crate::marketstack::{MarketstackClient, MarketstackEodRequest, MarketstackError};
-use crate::oxr::{OxrAlternativeMode, OxrClient, OxrError, OxrHistoricalRequest, OxrLatestRequest};
-use crate::pagination::{PageLimit, SortOrder};
-use crate::secrets::{MarketfeedSecrets, MarketfeedSecretsError};
-use crate::xetra::{XetraCsvReader, XetraError};
 use chrono::NaiveDate;
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
+use marketfeed::coinmarketcap::{
+    CoinmarketcapClient, CoinmarketcapError, CoinmarketcapQuotesRequest,
+    CoinmarketcapQuotesResponse,
+};
+use marketfeed::investing::{InvestingCsvReader, InvestingError};
+use marketfeed::marketstack::{
+    MarketstackClient, MarketstackEodEntry, MarketstackEodRequest, MarketstackError,
+};
+use marketfeed::oxr::{
+    OxrAlternativeMode, OxrClient, OxrError, OxrHistoricalRequest, OxrLatestRequest, OxrRates,
+};
+use marketfeed::pagination::{PageLimit, SortOrder};
+use marketfeed::secrets::{MarketfeedSecrets, MarketfeedSecretsError};
+use marketfeed::xetra::{XetraCsvReader, XetraError};
 use std::io;
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use url::Url;
 
 /// Error type for `marketfeed` CLI command execution.
 #[derive(Debug, thiserror::Error)]
-pub enum MarketfeedError {
+pub(crate) enum MarketfeedError {
     /// Failed to load provider secrets configuration.
     #[error(transparent)]
     Secrets(#[from] MarketfeedSecretsError),
@@ -49,9 +54,76 @@ pub enum MarketfeedError {
     Io(#[from] io::Error),
 }
 
+pub(crate) trait MarketstackBackend {
+    fn eod(
+        &self,
+        request: &MarketstackEodRequest,
+    ) -> Result<Vec<MarketstackEodEntry>, MarketstackError>;
+}
+
+impl MarketstackBackend for MarketstackClient {
+    fn eod(
+        &self,
+        request: &MarketstackEodRequest,
+    ) -> Result<Vec<MarketstackEodEntry>, MarketstackError> {
+        MarketstackClient::eod(self, request)
+    }
+}
+
+pub(crate) trait CoinmarketcapBackend {
+    fn quotes_latest(
+        &self,
+        request: &CoinmarketcapQuotesRequest,
+    ) -> Result<CoinmarketcapQuotesResponse, CoinmarketcapError>;
+}
+
+impl CoinmarketcapBackend for CoinmarketcapClient {
+    fn quotes_latest(
+        &self,
+        request: &CoinmarketcapQuotesRequest,
+    ) -> Result<CoinmarketcapQuotesResponse, CoinmarketcapError> {
+        CoinmarketcapClient::quotes_latest(self, request)
+    }
+}
+
+pub(crate) trait OxrBackend {
+    fn latest(&self, request: &OxrLatestRequest) -> Result<OxrRates, OxrError>;
+    fn historical(&self, request: &OxrHistoricalRequest) -> Result<OxrRates, OxrError>;
+}
+
+impl OxrBackend for OxrClient {
+    fn latest(&self, request: &OxrLatestRequest) -> Result<OxrRates, OxrError> {
+        OxrClient::latest(self, request)
+    }
+
+    fn historical(&self, request: &OxrHistoricalRequest) -> Result<OxrRates, OxrError> {
+        OxrClient::historical(self, request)
+    }
+}
+
+/// CLI sort order flag values mapped onto [`SortOrder`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliSortOrder {
+    /// Sort in ascending chronological order (`ASC`).
+    #[value(name = "asc", alias = "ASC")]
+    Asc,
+    /// Sort in descending chronological order (`DESC`).
+    #[value(name = "desc", alias = "DESC")]
+    Desc,
+}
+
+impl From<CliSortOrder> for SortOrder {
+    fn from(value: CliSortOrder) -> Self {
+        match value {
+            CliSortOrder::Asc => Self::Asc,
+            CliSortOrder::Desc => Self::Desc,
+        }
+    }
+}
+
 /// Top-level command-line arguments for `marketfeed`.
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
-pub struct MarketfeedCommand {
+pub(crate) struct MarketfeedCommand {
     /// Optional path to a JSON file containing provider API credentials.
     #[arg(long, global = true)]
     secrets_file: Option<PathBuf>,
@@ -69,31 +141,31 @@ impl MarketfeedCommand {
     /// # Errors
     ///
     /// Returns a [`MarketfeedError`] if command execution fails.
-    pub fn run(self) -> Result<(), MarketfeedError> {
-        if let Some(subcommand) = self.subcommand {
-            let json_output = subcommand.run_loading_secrets(self.secrets_file.as_deref())?;
-            println!("{json_output}");
-        }
+    pub(crate) fn run(self) -> Result<(), MarketfeedError> {
+        let Some(subcommand) = self.subcommand else {
+            return Ok(());
+        };
+        let secrets = if subcommand.requires_secrets() {
+            Self::load_secrets(self.secrets_file.as_deref())?
+        } else {
+            MarketfeedSecrets::default()
+        };
+        let json_output = subcommand.run(&secrets)?;
+        println!("{json_output}");
         Ok(())
     }
 
-    /// Executes the command using the provided [`MarketfeedSecrets`] and writes JSON to `stdout`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`MarketfeedError`] if command execution fails.
-    pub fn run_with_secrets(self, secrets: &MarketfeedSecrets) -> Result<(), MarketfeedError> {
-        if let Some(subcommand) = self.subcommand {
-            let json_output = subcommand.run(secrets)?;
-            println!("{json_output}");
+    fn load_secrets(secrets_file: Option<&Path>) -> Result<MarketfeedSecrets, MarketfeedError> {
+        match secrets_file {
+            Some(path) => Ok(MarketfeedSecrets::from_path(path)?),
+            None => Ok(MarketfeedSecrets::from_default_path()?),
         }
-        Ok(())
     }
 }
 
 /// Supported market data provider subcommands.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum ProviderSubcommand {
+pub(crate) enum ProviderSubcommand {
     /// Query Marketstack end-of-day (EOD) market data.
     Marketstack {
         /// Marketstack action to perform.
@@ -127,30 +199,11 @@ pub enum ProviderSubcommand {
 }
 
 impl ProviderSubcommand {
-    fn load_secrets(secrets_file: Option<&Path>) -> Result<MarketfeedSecrets, MarketfeedError> {
-        match secrets_file {
-            Some(path) => Ok(MarketfeedSecrets::from_path(path)?),
-            None => Ok(MarketfeedSecrets::from_default_path()?),
-        }
-    }
-
-    fn run_loading_secrets(self, secrets_file: Option<&Path>) -> Result<String, MarketfeedError> {
-        match self {
-            Self::Marketstack { action } => {
-                let secrets = Self::load_secrets(secrets_file)?;
-                action.run(&secrets)
-            }
-            Self::Coinmarketcap { action } => {
-                let secrets = Self::load_secrets(secrets_file)?;
-                action.run(&secrets)
-            }
-            Self::Oxr { action } => {
-                let secrets = Self::load_secrets(secrets_file)?;
-                action.run(&secrets)
-            }
-            Self::Xetra { action } => action.run(),
-            Self::Investing { action } => action.run(),
-        }
+    const fn requires_secrets(&self) -> bool {
+        matches!(
+            self,
+            Self::Marketstack { .. } | Self::Coinmarketcap { .. } | Self::Oxr { .. }
+        )
     }
 
     fn run(self, secrets: &MarketfeedSecrets) -> Result<String, MarketfeedError> {
@@ -162,33 +215,11 @@ impl ProviderSubcommand {
             Self::Investing { action } => action.run(),
         }
     }
-
-    #[cfg(test)]
-    fn run_with_base_url(
-        self,
-        secrets: &MarketfeedSecrets,
-        base_url: Url,
-    ) -> Result<String, MarketfeedError> {
-        match self {
-            Self::Marketstack { action } => match action {
-                MarketstackAction::Eod(cmd) => cmd.run_with_base_url(secrets, base_url),
-            },
-            Self::Coinmarketcap { action } => match action {
-                CoinmarketcapAction::Quotes(cmd) => cmd.run_with_base_url(secrets, base_url),
-            },
-            Self::Oxr { action } => match action {
-                OxrAction::Latest(cmd) => cmd.run_with_base_url(secrets, base_url),
-                OxrAction::Historical(cmd) => cmd.run_with_base_url(secrets, base_url),
-            },
-            Self::Xetra { action } => action.run(),
-            Self::Investing { action } => action.run(),
-        }
-    }
 }
 
 /// Actions supported by the `marketstack` subcommand.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum MarketstackAction {
+pub(crate) enum MarketstackAction {
     /// Query end-of-day (`/v2/eod`) stock data.
     Eod(MarketstackEodCommand),
 }
@@ -203,7 +234,7 @@ impl MarketstackAction {
 
 /// CLI arguments for `marketfeed marketstack eod`.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
-pub struct MarketstackEodCommand {
+pub(crate) struct MarketstackEodCommand {
     /// Comma-separated ticker symbols to query (e.g. `AAPL,MSFT`).
     #[arg(long, value_delimiter = ',', required = true)]
     symbols: Vec<String>,
@@ -222,7 +253,7 @@ pub struct MarketstackEodCommand {
 
     /// Sort order (`asc` or `desc`).
     #[arg(long)]
-    sort: Option<SortOrder>,
+    sort: Option<CliSortOrder>,
 
     /// Fetch a single page with at most `N` items.
     #[arg(long, conflicts_with_all = ["limit_pages", "all_pages"])]
@@ -248,30 +279,17 @@ impl MarketstackEodCommand {
             .as_deref()
             .filter(|k| !k.trim().is_empty())
             .ok_or(MarketstackError::MissingAccessKey)?;
-        let client = MarketstackClient::new(key)?;
-        self.run_with_client(client)
-    }
-
-    #[cfg(test)]
-    fn run_with_base_url(
-        self,
-        secrets: &MarketfeedSecrets,
-        base_url: Url,
-    ) -> Result<String, MarketfeedError> {
-        let key = secrets
-            .marketstack_access_key
-            .as_deref()
-            .filter(|k| !k.trim().is_empty())
-            .ok_or(MarketstackError::MissingAccessKey)?;
-        let client = MarketstackClient::with_base_url(key, base_url);
-        self.run_with_client(client)
-    }
-
-    fn run_with_client(self, mut client: MarketstackClient) -> Result<String, MarketfeedError> {
+        let mut client = MarketstackClient::new(key)?;
         if let Some(ceiling) = self.all_pages_ceiling {
             client = client.with_all_pages_ceiling(ceiling);
         }
+        self.run_with_backend(&client)
+    }
 
+    fn run_with_backend(
+        self,
+        backend: &impl MarketstackBackend,
+    ) -> Result<String, MarketfeedError> {
         let mut request = MarketstackEodRequest::new(self.symbols);
         if self.all_pages {
             request = request.with_limit(PageLimit::All);
@@ -281,7 +299,7 @@ impl MarketstackEodCommand {
             request = request.with_limit(PageLimit::Items(items));
         }
         if let Some(sort) = self.sort {
-            request = request.with_sort(sort);
+            request = request.with_sort(SortOrder::from(sort));
         }
         if let Some(date_from) = self.date_from {
             request = request.with_date_from(date_from);
@@ -293,14 +311,14 @@ impl MarketstackEodCommand {
             request = request.with_exchange(exchange);
         }
 
-        let entries = client.eod(&request)?;
+        let entries = backend.eod(&request)?;
         Ok(serde_json::to_string_pretty(&entries)?)
     }
 }
 
 /// Actions supported by the `coinmarketcap` subcommand.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum CoinmarketcapAction {
+pub(crate) enum CoinmarketcapAction {
     /// Query latest cryptocurrency quotes (`/v2/cryptocurrency/quotes/latest`).
     Quotes(CoinmarketcapQuotesCommand),
 }
@@ -315,7 +333,7 @@ impl CoinmarketcapAction {
 
 /// CLI arguments for `marketfeed coinmarketcap quotes`.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
-pub struct CoinmarketcapQuotesCommand {
+pub(crate) struct CoinmarketcapQuotesCommand {
     /// Comma-separated cryptocurrency symbols to query (e.g. `BTC,ETH`).
     #[arg(long, value_delimiter = ',', required = true)]
     symbols: Vec<String>,
@@ -333,38 +351,26 @@ impl CoinmarketcapQuotesCommand {
             .filter(|k| !k.trim().is_empty())
             .ok_or(CoinmarketcapError::MissingApiKey)?;
         let client = CoinmarketcapClient::new(key)?;
-        self.run_with_client(&client)
+        self.run_with_backend(&client)
     }
 
-    #[cfg(test)]
-    fn run_with_base_url(
+    fn run_with_backend(
         self,
-        secrets: &MarketfeedSecrets,
-        base_url: Url,
+        backend: &impl CoinmarketcapBackend,
     ) -> Result<String, MarketfeedError> {
-        let key = secrets
-            .coinmarketcap_api_key
-            .as_deref()
-            .filter(|k| !k.trim().is_empty())
-            .ok_or(CoinmarketcapError::MissingApiKey)?;
-        let client = CoinmarketcapClient::with_base_url(key, base_url);
-        self.run_with_client(&client)
-    }
-
-    fn run_with_client(self, client: &CoinmarketcapClient) -> Result<String, MarketfeedError> {
         let mut request = CoinmarketcapQuotesRequest::new(self.symbols);
         if !self.convert.is_empty() {
             request = request.with_convert(self.convert);
         }
 
-        let response = client.quotes_latest(&request)?;
+        let response = backend.quotes_latest(&request)?;
         Ok(serde_json::to_string_pretty(&response)?)
     }
 }
 
 /// Actions supported by the `oxr` subcommand.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum OxrAction {
+pub(crate) enum OxrAction {
     /// Query latest currency exchange rates (`/api/latest.json`).
     Latest(OxrLatestCommand),
     /// Query historical currency exchange rates (`/api/historical/{date}.json`).
@@ -382,7 +388,7 @@ impl OxrAction {
 
 /// CLI arguments for `marketfeed oxr latest`.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
-pub struct OxrLatestCommand {
+pub(crate) struct OxrLatestCommand {
     /// Optional base currency code (e.g. `USD`).
     #[arg(long)]
     base: Option<String>,
@@ -404,25 +410,10 @@ impl OxrLatestCommand {
             .filter(|k| !k.trim().is_empty())
             .ok_or(OxrError::MissingAppId)?;
         let client = OxrClient::new(app_id)?;
-        self.run_with_client(&client)
+        self.run_with_backend(&client)
     }
 
-    #[cfg(test)]
-    fn run_with_base_url(
-        self,
-        secrets: &MarketfeedSecrets,
-        base_url: Url,
-    ) -> Result<String, MarketfeedError> {
-        let app_id = secrets
-            .oxr_app_id
-            .as_deref()
-            .filter(|k| !k.trim().is_empty())
-            .ok_or(OxrError::MissingAppId)?;
-        let client = OxrClient::with_base_url(app_id, base_url);
-        self.run_with_client(&client)
-    }
-
-    fn run_with_client(self, client: &OxrClient) -> Result<String, MarketfeedError> {
+    fn run_with_backend(self, backend: &impl OxrBackend) -> Result<String, MarketfeedError> {
         let alternative = if self.standard_only {
             OxrAlternativeMode::StandardOnly
         } else {
@@ -437,14 +428,14 @@ impl OxrLatestCommand {
             request = request.with_symbols(self.symbols);
         }
 
-        let rates = client.latest(&request)?;
+        let rates = backend.latest(&request)?;
         Ok(serde_json::to_string_pretty(&rates)?)
     }
 }
 
 /// CLI arguments for `marketfeed oxr historical`.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
-pub struct OxrHistoricalCommand {
+pub(crate) struct OxrHistoricalCommand {
     /// Historical date to query (`YYYY-MM-DD`).
     #[arg(long)]
     date: NaiveDate,
@@ -470,25 +461,10 @@ impl OxrHistoricalCommand {
             .filter(|k| !k.trim().is_empty())
             .ok_or(OxrError::MissingAppId)?;
         let client = OxrClient::new(app_id)?;
-        self.run_with_client(&client)
+        self.run_with_backend(&client)
     }
 
-    #[cfg(test)]
-    fn run_with_base_url(
-        self,
-        secrets: &MarketfeedSecrets,
-        base_url: Url,
-    ) -> Result<String, MarketfeedError> {
-        let app_id = secrets
-            .oxr_app_id
-            .as_deref()
-            .filter(|k| !k.trim().is_empty())
-            .ok_or(OxrError::MissingAppId)?;
-        let client = OxrClient::with_base_url(app_id, base_url);
-        self.run_with_client(&client)
-    }
-
-    fn run_with_client(self, client: &OxrClient) -> Result<String, MarketfeedError> {
+    fn run_with_backend(self, backend: &impl OxrBackend) -> Result<String, MarketfeedError> {
         let alternative = if self.standard_only {
             OxrAlternativeMode::StandardOnly
         } else {
@@ -503,14 +479,14 @@ impl OxrHistoricalCommand {
             request = request.with_symbols(self.symbols);
         }
 
-        let rates = client.historical(&request)?;
+        let rates = backend.historical(&request)?;
         Ok(serde_json::to_string_pretty(&rates)?)
     }
 }
 
 /// Actions supported by the `xetra` subcommand.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum XetraAction {
+pub(crate) enum XetraAction {
     /// Parse a local Xetra CSV file and output JSON.
     Parse(XetraParseCommand),
 }
@@ -525,7 +501,7 @@ impl XetraAction {
 
 /// CLI arguments for `marketfeed xetra parse`.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
-pub struct XetraParseCommand {
+pub(crate) struct XetraParseCommand {
     /// Path to the Xetra CSV file to parse.
     #[arg(long)]
     file: PathBuf,
@@ -540,7 +516,7 @@ impl XetraParseCommand {
 
 /// Actions supported by the `investing` subcommand.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum InvestingAction {
+pub(crate) enum InvestingAction {
     /// Parse a local Investing.com CSV file and output JSON.
     Parse(InvestingParseCommand),
 }
@@ -555,7 +531,7 @@ impl InvestingAction {
 
 /// CLI arguments for `marketfeed investing parse`.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
-pub struct InvestingParseCommand {
+pub(crate) struct InvestingParseCommand {
     /// Path to the Investing.com CSV file to parse.
     #[arg(long)]
     file: PathBuf,
@@ -571,9 +547,12 @@ impl InvestingParseCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use clap::Parser;
     use googletest::prelude::*;
-    use mockito::{Matcher, Server};
+    use marketfeed::coinmarketcap::CoinmarketcapStatus;
+    use rust_decimal::Decimal;
+    use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -583,8 +562,56 @@ mod tests {
         cmd: MarketfeedCommand,
     }
 
+    struct FakeMarketstackBackend {
+        expected_request: MarketstackEodRequest,
+        response: Vec<MarketstackEodEntry>,
+    }
+
+    impl MarketstackBackend for FakeMarketstackBackend {
+        fn eod(
+            &self,
+            request: &MarketstackEodRequest,
+        ) -> Result<Vec<MarketstackEodEntry>, MarketstackError> {
+            assert_that!(request, eq(&self.expected_request));
+            Ok(self.response.clone())
+        }
+    }
+
+    struct FakeCoinmarketcapBackend {
+        expected_request: CoinmarketcapQuotesRequest,
+        response: CoinmarketcapQuotesResponse,
+    }
+
+    impl CoinmarketcapBackend for FakeCoinmarketcapBackend {
+        fn quotes_latest(
+            &self,
+            request: &CoinmarketcapQuotesRequest,
+        ) -> Result<CoinmarketcapQuotesResponse, CoinmarketcapError> {
+            assert_that!(request, eq(&self.expected_request));
+            Ok(self.response.clone())
+        }
+    }
+
+    struct FakeOxrBackend {
+        expected_latest: Option<OxrLatestRequest>,
+        expected_historical: Option<OxrHistoricalRequest>,
+        response: OxrRates,
+    }
+
+    impl OxrBackend for FakeOxrBackend {
+        fn latest(&self, request: &OxrLatestRequest) -> Result<OxrRates, OxrError> {
+            assert_that!(self.expected_latest.as_ref(), some(eq(request)));
+            Ok(self.response.clone())
+        }
+
+        fn historical(&self, request: &OxrHistoricalRequest) -> Result<OxrRates, OxrError> {
+            assert_that!(self.expected_historical.as_ref(), some(eq(request)));
+            Ok(self.response.clone())
+        }
+    }
+
     #[googletest::test]
-    fn run_with_secrets_xetra_and_investing_parse_subcommands_succeed()
+    fn run_xetra_and_investing_parse_subcommands_succeed()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let temp_dir = TempDir::new()?;
         let xetra_path = temp_dir.path().join("ENR.csv");
@@ -597,7 +624,6 @@ mod tests {
             ),
         )?;
 
-        let secrets = MarketfeedSecrets::default();
         let xetra_cli = TestCli::try_parse_from([
             "marketfeed",
             "xetra",
@@ -605,7 +631,7 @@ mod tests {
             "--file",
             &xetra_path.to_string_lossy(),
         ])?;
-        assert_that!(xetra_cli.cmd.run_with_secrets(&secrets), ok(anything()));
+        assert_that!(xetra_cli.cmd.run(), ok(anything()));
 
         let investing_path = temp_dir.path().join("GOOG.csv");
         fs::write(
@@ -623,31 +649,40 @@ mod tests {
             "--file",
             &investing_path.to_string_lossy(),
         ])?;
-        assert_that!(investing_cli.cmd.run_with_secrets(&secrets), ok(anything()));
+        assert_that!(investing_cli.cmd.run(), ok(anything()));
         Ok(())
     }
 
     #[googletest::test]
-    fn run_with_secrets_online_provider_subcommands_via_mock_servers()
+    fn run_marketstack_eod_constructs_request_and_formats_json()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let mut server = Server::new();
-        let ms_mock = server
-            .mock("GET", "/v2/eod")
-            .match_query(Matcher::AllOf(vec![
-                Matcher::UrlEncoded("access_key".into(), "ms-key".into()),
-                Matcher::UrlEncoded("symbols".into(), "AAPL,MSFT".into()),
-                Matcher::UrlEncoded("date_from".into(), "2025-01-01".into()),
-                Matcher::UrlEncoded("limit".into(), "1000".into()),
-                Matcher::UrlEncoded("offset".into(), "0".into()),
-            ]))
-            .with_status(200)
-            .with_body(r#"{"pagination":{"limit":1000,"offset":0,"count":1,"total":3},"data":[{"open":180.0,"high":185.0,"low":179.0,"close":184.0,"volume":1000.0,"symbol":"AAPL","exchange":"XNAS","date":"2025-04-04T00:00:00+0000"}]}"#)
-            .create();
-
-        let secrets = MarketfeedSecrets {
-            marketstack_access_key: Some("ms-key".to_string()),
-            coinmarketcap_api_key: Some("cmc-key".to_string()),
-            oxr_app_id: Some("oxr-key".to_string()),
+        let date_from = NaiveDate::from_ymd_opt(2025, 1, 1).ok_or("invalid date")?;
+        let fake = FakeMarketstackBackend {
+            expected_request: MarketstackEodRequest::new(["AAPL", "MSFT"])
+                .with_date_from(date_from)
+                .with_sort(SortOrder::Asc)
+                .with_limit(PageLimit::All),
+            response: vec![MarketstackEodEntry {
+                date: Utc::now(),
+                open: None,
+                adj_open: None,
+                close: Some(Decimal::from(184)),
+                adj_close: None,
+                high: None,
+                adj_high: None,
+                low: None,
+                adj_low: None,
+                volume: None,
+                adj_volume: None,
+                split_factor: None,
+                dividend: None,
+                name: None,
+                symbol: "AAPL".to_string(),
+                exchange: "XNAS".to_string(),
+                exchange_code: None,
+                asset_type: None,
+                price_currency: None,
+            }],
         };
 
         let ms_cli = TestCli::try_parse_from([
@@ -658,25 +693,43 @@ mod tests {
             "AAPL,MSFT",
             "--date-from",
             "2025-01-01",
+            "--sort",
+            "asc",
             "--all-pages",
             "--all-pages-ceiling",
             "1",
         ])?;
-        let base_url = Url::parse(&server.url())?;
-        let ms_sub = ms_cli.cmd.subcommand.ok_or("expected subcommand")?;
-        let ms_json = ms_sub.run_with_base_url(&secrets, base_url.clone())?;
-        assert_that!(&ms_json, contains_substring("\"AAPL\""));
-        ms_mock.assert();
+        let Some(ProviderSubcommand::Marketstack {
+            action: MarketstackAction::Eod(ms_cmd),
+        }) = ms_cli.cmd.subcommand
+        else {
+            return Err("expected marketstack eod".into());
+        };
 
-        let cmc_mock = server
-            .mock("GET", "/v2/cryptocurrency/quotes/latest")
-            .match_query(Matcher::AllOf(vec![
-                Matcher::UrlEncoded("symbol".into(), "BTC,ETH".into()),
-                Matcher::UrlEncoded("convert".into(), "USD,EUR".into()),
-            ]))
-            .with_status(200)
-            .with_body(r#"{"status":{"timestamp":"2025-04-04T12:00:00.000Z","error_code":0,"elapsed":5,"credit_count":1},"data":{}}"#)
-            .create();
+        let ms_json = ms_cmd.run_with_backend(&fake)?;
+        assert_that!(&ms_json, contains_substring("\"AAPL\""));
+        assert_that!(&ms_json, contains_substring("\"184\""));
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn run_coinmarketcap_quotes_constructs_request_and_formats_json()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let fake = FakeCoinmarketcapBackend {
+            expected_request: CoinmarketcapQuotesRequest::new(["BTC", "ETH"])
+                .with_convert(["USD", "EUR"]),
+            response: CoinmarketcapQuotesResponse {
+                status: CoinmarketcapStatus {
+                    timestamp: Utc::now(),
+                    error_code: 0,
+                    error_message: None,
+                    elapsed: 5,
+                    credit_count: 1,
+                    notice: None,
+                },
+                data: HashMap::new(),
+            },
+        };
 
         let cmc_cli = TestCli::try_parse_from([
             "marketfeed",
@@ -687,39 +740,104 @@ mod tests {
             "--convert",
             "USD,EUR",
         ])?;
-        let cmc_sub = cmc_cli.cmd.subcommand.ok_or("expected subcommand")?;
-        let cmc_json = cmc_sub.run_with_base_url(&secrets, base_url.clone())?;
+        let Some(ProviderSubcommand::Coinmarketcap {
+            action: CoinmarketcapAction::Quotes(cmc_cmd),
+        }) = cmc_cli.cmd.subcommand
+        else {
+            return Err("expected cmc quotes".into());
+        };
+
+        let cmc_json = cmc_cmd.run_with_backend(&fake)?;
         assert_that!(&cmc_json, contains_substring("\"credit_count\": 1"));
-        cmc_mock.assert();
-
-        let oxr_mock = server
-            .mock("GET", "/api/historical/2025-04-04.json")
-            .match_query(Matcher::AllOf(vec![
-                Matcher::UrlEncoded("app_id".into(), "oxr-key".into()),
-                Matcher::UrlEncoded("show_alternative".into(), "true".into()),
-            ]))
-            .with_status(200)
-            .with_body(r#"{"disclaimer":"d","license":"l","timestamp":1743724799,"base":"USD","rates":{"EUR":0.91}}"#)
-            .create();
-
-        let oxr_cli =
-            TestCli::try_parse_from(["marketfeed", "oxr", "historical", "--date", "2025-04-04"])?;
-        let oxr_sub = oxr_cli.cmd.subcommand.ok_or("expected subcommand")?;
-        let oxr_json = oxr_sub.run_with_base_url(&secrets, base_url)?;
-        assert_that!(&oxr_json, contains_substring("\"EUR\""));
-        oxr_mock.assert();
         Ok(())
     }
 
     #[googletest::test]
-    fn run_with_secrets_missing_key_returns_provider_error()
+    fn run_oxr_latest_constructs_request_and_formats_json()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let fake = FakeOxrBackend {
+            expected_latest: Some(
+                OxrLatestRequest::new()
+                    .with_base("USD")
+                    .with_symbols(["EUR"])
+                    .with_alternative(OxrAlternativeMode::StandardOnly),
+            ),
+            expected_historical: None,
+            response: OxrRates {
+                disclaimer: "d".to_string(),
+                license: "l".to_string(),
+                timestamp: 1_743_724_799,
+                base: "USD".to_string(),
+                rates: [("EUR".to_string(), Decimal::new(91, 2))]
+                    .into_iter()
+                    .collect(),
+            },
+        };
+
+        let oxr_latest_cli = TestCli::try_parse_from([
+            "marketfeed",
+            "oxr",
+            "latest",
+            "--base",
+            "USD",
+            "--symbols",
+            "EUR",
+            "--standard-only",
+        ])?;
+        let Some(ProviderSubcommand::Oxr {
+            action: OxrAction::Latest(oxr_latest_cmd),
+        }) = oxr_latest_cli.cmd.subcommand
+        else {
+            return Err("expected oxr latest".into());
+        };
+
+        let oxr_latest_json = oxr_latest_cmd.run_with_backend(&fake)?;
+        assert_that!(&oxr_latest_json, contains_substring("\"EUR\""));
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn run_oxr_historical_constructs_request_and_formats_json()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let expected_date = NaiveDate::from_ymd_opt(2025, 4, 4).ok_or("invalid date")?;
+        let fake = FakeOxrBackend {
+            expected_latest: None,
+            expected_historical: Some(OxrHistoricalRequest::new(expected_date)),
+            response: OxrRates {
+                disclaimer: "d".to_string(),
+                license: "l".to_string(),
+                timestamp: 1_743_724_799,
+                base: "USD".to_string(),
+                rates: [("EUR".to_string(), Decimal::new(91, 2))]
+                    .into_iter()
+                    .collect(),
+            },
+        };
+
+        let oxr_cli =
+            TestCli::try_parse_from(["marketfeed", "oxr", "historical", "--date", "2025-04-04"])?;
+        let Some(ProviderSubcommand::Oxr {
+            action: OxrAction::Historical(oxr_hist_cmd),
+        }) = oxr_cli.cmd.subcommand
+        else {
+            return Err("expected oxr historical".into());
+        };
+
+        let oxr_json = oxr_hist_cmd.run_with_backend(&fake)?;
+        assert_that!(&oxr_json, contains_substring("\"EUR\""));
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn run_missing_or_blank_key_returns_provider_error()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let empty_secrets = MarketfeedSecrets::default();
 
         let ms_cli =
             TestCli::try_parse_from(["marketfeed", "marketstack", "eod", "--symbols", "AAPL"])?;
+        let ms_sub = ms_cli.cmd.subcommand.ok_or("expected subcommand")?;
         assert_that!(
-            ms_cli.cmd.run_with_secrets(&empty_secrets),
+            ms_sub.run(&empty_secrets),
             err(pat!(MarketfeedError::Marketstack(pat!(
                 MarketstackError::MissingAccessKey
             ))))
@@ -727,16 +845,18 @@ mod tests {
 
         let cmc_cli =
             TestCli::try_parse_from(["marketfeed", "coinmarketcap", "quotes", "--symbols", "BTC"])?;
+        let cmc_sub = cmc_cli.cmd.subcommand.ok_or("expected subcommand")?;
         assert_that!(
-            cmc_cli.cmd.run_with_secrets(&empty_secrets),
+            cmc_sub.run(&empty_secrets),
             err(pat!(MarketfeedError::Coinmarketcap(pat!(
                 CoinmarketcapError::MissingApiKey
             ))))
         );
 
         let oxr_cli = TestCli::try_parse_from(["marketfeed", "oxr", "latest"])?;
+        let oxr_sub = oxr_cli.cmd.subcommand.ok_or("expected subcommand")?;
         assert_that!(
-            oxr_cli.cmd.run_with_secrets(&empty_secrets),
+            oxr_sub.run(&empty_secrets),
             err(pat!(MarketfeedError::Oxr(pat!(OxrError::MissingAppId))))
         );
 
@@ -747,23 +867,26 @@ mod tests {
         };
         let ms_ws =
             TestCli::try_parse_from(["marketfeed", "marketstack", "eod", "--symbols", "AAPL"])?;
+        let ms_ws_sub = ms_ws.cmd.subcommand.ok_or("expected subcommand")?;
         assert_that!(
-            ms_ws.cmd.run_with_secrets(&whitespace_secrets),
+            ms_ws_sub.run(&whitespace_secrets),
             err(pat!(MarketfeedError::Marketstack(pat!(
                 MarketstackError::MissingAccessKey
             ))))
         );
         let cmc_ws =
             TestCli::try_parse_from(["marketfeed", "coinmarketcap", "quotes", "--symbols", "BTC"])?;
+        let cmc_ws_sub = cmc_ws.cmd.subcommand.ok_or("expected subcommand")?;
         assert_that!(
-            cmc_ws.cmd.run_with_secrets(&whitespace_secrets),
+            cmc_ws_sub.run(&whitespace_secrets),
             err(pat!(MarketfeedError::Coinmarketcap(pat!(
                 CoinmarketcapError::MissingApiKey
             ))))
         );
         let oxr_ws = TestCli::try_parse_from(["marketfeed", "oxr", "latest"])?;
+        let oxr_ws_sub = oxr_ws.cmd.subcommand.ok_or("expected subcommand")?;
         assert_that!(
-            oxr_ws.cmd.run_with_secrets(&whitespace_secrets),
+            oxr_ws_sub.run(&whitespace_secrets),
             err(pat!(MarketfeedError::Oxr(pat!(OxrError::MissingAppId))))
         );
         Ok(())
@@ -808,26 +931,18 @@ mod tests {
             ))))
         );
 
-        let secrets_path = temp_dir.path().join("secrets.json");
-        fs::write(&secrets_path, r#"{"oxr_app_id": "only-oxr-set"}"#)?;
-
-        let ms_cli = TestCli::try_parse_from([
+        let valid_secrets = temp_dir.path().join("custom-secrets.json");
+        fs::write(&valid_secrets, r#"{"marketstack_access_key": "present"}"#)?;
+        let online_with_other_key = TestCli::try_parse_from([
             "marketfeed",
-            "marketstack",
-            "eod",
             "--secrets-file",
-            &secrets_path.to_string_lossy(),
-            "--symbols",
-            "AAPL",
-            "--all-pages",
-            "--all-pages-ceiling",
-            "1",
+            &valid_secrets.to_string_lossy(),
+            "oxr",
+            "latest",
         ])?;
         assert_that!(
-            ms_cli.cmd.run(),
-            err(pat!(MarketfeedError::Marketstack(pat!(
-                MarketstackError::MissingAccessKey
-            ))))
+            online_with_other_key.cmd.run(),
+            err(pat!(MarketfeedError::Oxr(pat!(OxrError::MissingAppId))))
         );
         Ok(())
     }

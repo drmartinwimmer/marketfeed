@@ -38,7 +38,7 @@ marketfeed = "0.1"
 ### CLI
 
 ```bash
-cargo install marketfeed
+cargo install marketfeed --features cli
 ```
 
 ## Library Usage
