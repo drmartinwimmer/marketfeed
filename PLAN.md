@@ -125,7 +125,7 @@ Generalizes `stock::oxr::endpoint` and `stock::oxr::data`:
 - **`OxrLatestRequest` & `OxrHistoricalRequest`**:
   - Allows configuring `base: Option<String>`, `symbols: Vec<String>`, and `alternative: OxrAlternativeMode` (defaulting to including alternative currencies as in `stock`).
 - **`OxrRates`**:
-  - Raw response struct (`disclaimer: String`, `license: String`, `timestamp: i64`, `base: String`, `rates: HashMap<String, Decimal>`).
+  - Raw response struct (`timestamp: i64`, `base: String`, `rates: BTreeMap<String, Decimal>`, `disclaimer: String`, `license: String`), implementing `PartialOrd` and `Ord` ordered by `timestamp` first.
   - Excludes `stock`-specific `TickerPoint` and `f32` cross-rate conversion methods.
 
 ### 2.5 Xetra CSV Reader (`marketfeed::xetra`)

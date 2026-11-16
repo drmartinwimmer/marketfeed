@@ -3,7 +3,7 @@ use std::fmt;
 use std::num::NonZero;
 
 /// Sort order for paginated or time-series market data queries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum SortOrder {
     /// Sort in ascending chronological order (`ASC`).
