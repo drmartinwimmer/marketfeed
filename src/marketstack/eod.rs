@@ -75,7 +75,7 @@ impl MarketstackEodRequest {
 }
 
 /// Single end-of-day (EOD) market data record returned by Marketstack `/v2/eod`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct MarketstackEodEntry {
     /// Trading session timestamp in UTC.
     pub date: DateTime<Utc>,
@@ -145,6 +145,7 @@ pub struct MarketstackEodResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Days;
     use googletest::prelude::*;
     use std::str::FromStr;
 
@@ -185,6 +186,16 @@ mod tests {
 
         let roundtrip: MarketstackEodEntry = serde_json::from_str(&serialized)?;
         assert_that!(&roundtrip, eq(&entry));
+
+        let earlier_date = entry
+            .date
+            .checked_sub_days(Days::new(1))
+            .ok_or("invalid earlier date")?;
+        let earlier = MarketstackEodEntry {
+            date: earlier_date,
+            ..entry.clone()
+        };
+        assert_that!(&earlier, lt(&entry));
         Ok(())
     }
 }

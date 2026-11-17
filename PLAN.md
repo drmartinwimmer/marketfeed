@@ -22,8 +22,8 @@
 src/
 ├── lib.rs
 ├── main.rs
-├── commands.rs          # CLI command definitions and execution (MarketfeedCommand)
-├── secrets.rs           # Provider API credentials loading (MarketfeedSecrets)
+├── commands.rs          # Binary-only CLI command definitions and execution (MarketfeedCommand)
+├── secrets.rs           # Shared provider API credentials loading (MarketfeedSecrets)
 ├── pagination.rs        # Shared pagination types (PageLimit, PaginationMeta, SortOrder)
 ├── marketstack/         # Marketstack REST API v2 client & types
 │   ├── mod.rs
@@ -125,7 +125,7 @@ Generalizes `stock::oxr::endpoint` and `stock::oxr::data`:
 - **`OxrLatestRequest` & `OxrHistoricalRequest`**:
   - Allows configuring `base: Option<String>`, `symbols: Vec<String>`, and `alternative: OxrAlternativeMode` (defaulting to including alternative currencies as in `stock`).
 - **`OxrRates`**:
-  - Raw response struct (`disclaimer: String`, `license: String`, `timestamp: i64`, `base: String`, `rates: HashMap<String, Decimal>`).
+  - Raw response struct (`timestamp: i64`, `base: String`, `rates: BTreeMap<String, Decimal>`, `disclaimer: String`, `license: String`), implementing `PartialOrd` and `Ord` ordered by `timestamp` first.
   - Excludes `stock`-specific `TickerPoint` and `f32` cross-rate conversion methods.
 
 ### 2.5 Xetra CSV Reader (`marketfeed::xetra`)
@@ -192,7 +192,7 @@ marketfeed xetra parse --file ENR.csv
 marketfeed investing parse --file GOOG.csv
 ```
 
-API credentials (`MarketfeedSecrets` in `src/secrets.rs`) are loaded lazily for online provider subcommands from `<config_dir>/marketfeed/secrets.json` by default, or from an explicit JSON file via `--secrets-file <PATH>` (and `MarketfeedSecrets::from_path(path)` / `MarketfeedCommand::run_with_secrets(&secrets)` in library code). Offline CSV subcommands (`xetra`, `investing`) run without loading secrets.
+API credentials (`MarketfeedSecrets` in `src/secrets.rs`) are part of the library so all binaries built on `marketfeed` share the same secrets configuration (`MarketfeedSecrets::from_default_path()` for `<config_dir>/marketfeed/secrets.json`, `MarketfeedSecrets::from_search_path(config_dir)` to check `<config_dir>/secrets.json` first before falling back to the default `marketfeed` directory, or `MarketfeedSecrets::from_path(path)` for an explicit file). In the CLI, credentials are loaded lazily for online provider subcommands from `<config_dir>/marketfeed/secrets.json` by default, or from `--secrets-file <PATH>`. Offline CSV subcommands (`xetra`, `investing`) run without loading secrets.
 
 ---
 

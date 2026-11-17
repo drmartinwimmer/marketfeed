@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Controls whether alternative/black-market/digital currencies are included in OpenExchangeRates responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -120,16 +120,41 @@ impl OxrHistoricalRequest {
 }
 
 /// Untransformed currency exchange rates response returned by OpenExchangeRates.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct OxrRates {
-    /// Terms-of-use disclaimer URL.
-    pub disclaimer: String,
-    /// License agreement URL.
-    pub license: String,
     /// Unix epoch timestamp (in seconds) when the rates were published.
     pub timestamp: i64,
     /// Base currency code (typically `"USD"`).
     pub base: String,
     /// Map of currency code to exchange rate relative to `base`.
-    pub rates: HashMap<String, Decimal>,
+    pub rates: BTreeMap<String, Decimal>,
+    /// Terms-of-use disclaimer URL.
+    pub disclaimer: String,
+    /// License agreement URL.
+    pub license: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use googletest::prelude::*;
+
+    #[googletest::test]
+    fn oxr_rates_orders_chronologically_by_timestamp() {
+        let earlier = OxrRates {
+            timestamp: 1_700_000_000,
+            base: "USD".to_string(),
+            rates: BTreeMap::from([("EUR".to_string(), Decimal::new(92, 2))]),
+            disclaimer: "z-disclaimer".to_string(),
+            license: "z-license".to_string(),
+        };
+        let later = OxrRates {
+            timestamp: 1_700_086_400,
+            base: "USD".to_string(),
+            rates: BTreeMap::from([("EUR".to_string(), Decimal::new(91, 2))]),
+            disclaimer: "a-disclaimer".to_string(),
+            license: "a-license".to_string(),
+        };
+        assert_that!(&earlier, lt(&later));
+    }
 }

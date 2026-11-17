@@ -1,5 +1,7 @@
+mod commands;
+
 use clap::Parser;
-use marketfeed::MarketfeedCommand;
+use commands::MarketfeedCommand;
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
