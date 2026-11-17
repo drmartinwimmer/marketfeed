@@ -192,7 +192,7 @@ marketfeed xetra parse --file ENR.csv
 marketfeed investing parse --file GOOG.csv
 ```
 
-API credentials (`MarketfeedSecrets` in `src/secrets.rs`) are part of the library so all binaries built on `marketfeed` share the same secrets configuration. In the CLI, credentials are loaded lazily for online provider subcommands from `<config_dir>/marketfeed/secrets.json` by default (`MarketfeedSecrets::from_default_path()`), or from an explicit JSON file via `--secrets-file <PATH>` (`MarketfeedSecrets::from_path(path)`). Offline CSV subcommands (`xetra`, `investing`) run without loading secrets.
+API credentials (`MarketfeedSecrets` in `src/secrets.rs`) are part of the library so all binaries built on `marketfeed` share the same secrets configuration (`MarketfeedSecrets::from_default_path()` for `<config_dir>/marketfeed/secrets.json`, `MarketfeedSecrets::from_search_path(config_dir)` to check `<config_dir>/secrets.json` first before falling back to the default `marketfeed` directory, or `MarketfeedSecrets::from_path(path)` for an explicit file). In the CLI, credentials are loaded lazily for online provider subcommands from `<config_dir>/marketfeed/secrets.json` by default, or from `--secrets-file <PATH>`. Offline CSV subcommands (`xetra`, `investing`) run without loading secrets.
 
 ---
 

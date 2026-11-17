@@ -45,6 +45,9 @@ pub struct MarketfeedSecrets {
 }
 
 impl MarketfeedSecrets {
+    /// Standard secrets file name searched inside configuration directories (`"secrets.json"`).
+    pub const FILE_NAME: &'static str = "secrets.json";
+
     /// Loads secrets from the default path in the user's home configuration directory
     /// (`<config_dir>/marketfeed/secrets.json`), returning [`Self::default()`] if the file
     /// does not exist.
@@ -54,13 +57,20 @@ impl MarketfeedSecrets {
     /// Returns [`MarketfeedSecretsError`] if the home configuration directory cannot be
     /// determined or if reading or parsing an existing secrets file fails.
     pub fn from_default_path() -> Result<Self, MarketfeedSecretsError> {
-        let dirs = ProjectDirs::from("", "", "marketfeed")
-            .ok_or(MarketfeedSecretsError::HomeConfigDirUnavailable)?;
-        let path = dirs.config_dir().join("secrets.json");
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        Self::from_path(&path)
+        Self::resolve_with_fallback(None, Self::default_config_dir)
+    }
+
+    /// Searches `config_dir` for [`Self::FILE_NAME`] (`<config_dir>/secrets.json`) first,
+    /// taking precedence over the default `marketfeed` configuration directory if a file
+    /// exists there, and falling back to [`Self::from_default_path()`] otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MarketfeedSecretsError`] if an existing secrets file in `config_dir` or the
+    /// fallback default directory cannot be read or parsed, or if the fallback home
+    /// configuration directory is unavailable when `config_dir` contains no secrets file.
+    pub fn from_search_path(config_dir: &Path) -> Result<Self, MarketfeedSecretsError> {
+        Self::resolve_with_fallback(Some(config_dir), Self::default_config_dir)
     }
 
     /// Loads secrets from a custom JSON file path.
@@ -80,6 +90,34 @@ impl MarketfeedSecrets {
             source,
         })
     }
+
+    fn default_config_dir() -> Result<PathBuf, MarketfeedSecretsError> {
+        let dirs = ProjectDirs::from("", "", "marketfeed")
+            .ok_or(MarketfeedSecretsError::HomeConfigDirUnavailable)?;
+        Ok(dirs.config_dir().to_path_buf())
+    }
+
+    fn resolve_with_fallback<F>(
+        search_dir: Option<&Path>,
+        default_dir: F,
+    ) -> Result<Self, MarketfeedSecretsError>
+    where
+        F: FnOnce() -> Result<PathBuf, MarketfeedSecretsError>,
+    {
+        if let Some(dir) = search_dir {
+            let candidate = dir.join(Self::FILE_NAME);
+            if candidate.is_file() {
+                return Self::from_path(&candidate);
+            }
+        }
+
+        let fallback = default_dir()?.join(Self::FILE_NAME);
+        if fallback.is_file() {
+            return Self::from_path(&fallback);
+        }
+
+        Ok(Self::default())
+    }
 }
 
 #[cfg(test)]
@@ -92,7 +130,7 @@ mod tests {
     fn from_path_deserializes_secrets_json() -> std::result::Result<(), Box<dyn std::error::Error>>
     {
         let temp_dir = TempDir::new()?;
-        let secrets_file = temp_dir.path().join("secrets.json");
+        let secrets_file = temp_dir.path().join(MarketfeedSecrets::FILE_NAME);
         fs::write(
             &secrets_file,
             r#"{
@@ -117,5 +155,79 @@ mod tests {
         let missing = Path::new("/nonexistent/marketfeed/secrets.json");
         let result = MarketfeedSecrets::from_path(missing);
         assert_that!(result, err(pat!(MarketfeedSecretsError::Io { .. })));
+    }
+
+    #[googletest::test]
+    fn from_search_path_prefers_custom_config_dir_over_default_dir()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let custom_dir = TempDir::new()?;
+        let fallback_dir = TempDir::new()?;
+        fs::write(
+            custom_dir.path().join(MarketfeedSecrets::FILE_NAME),
+            r#"{"marketstack_access_key": "custom-priority-key"}"#,
+        )?;
+        fs::write(
+            fallback_dir.path().join(MarketfeedSecrets::FILE_NAME),
+            r#"{"marketstack_access_key": "fallback-key", "oxr_app_id": "fallback-oxr"}"#,
+        )?;
+
+        let direct = MarketfeedSecrets::from_search_path(custom_dir.path())?;
+        assert_that!(
+            direct.marketstack_access_key.as_deref(),
+            some(eq("custom-priority-key"))
+        );
+        assert_that!(direct.oxr_app_id, none());
+
+        let resolved = MarketfeedSecrets::resolve_with_fallback(Some(custom_dir.path()), || {
+            Ok(fallback_dir.path().to_path_buf())
+        })?;
+        assert_that!(
+            resolved.marketstack_access_key.as_deref(),
+            some(eq("custom-priority-key"))
+        );
+        assert_that!(resolved.oxr_app_id, none());
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn resolve_with_fallback_loads_default_dir_or_empty_when_custom_missing()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let empty_custom_dir = TempDir::new()?;
+        let fallback_dir = TempDir::new()?;
+        fs::write(
+            fallback_dir.path().join(MarketfeedSecrets::FILE_NAME),
+            r#"{"oxr_app_id": "fallback-oxr-id"}"#,
+        )?;
+
+        let fallback_loaded =
+            MarketfeedSecrets::resolve_with_fallback(Some(empty_custom_dir.path()), || {
+                Ok(fallback_dir.path().to_path_buf())
+            })?;
+        assert_that!(
+            fallback_loaded.oxr_app_id.as_deref(),
+            some(eq("fallback-oxr-id"))
+        );
+
+        let empty_fallback_dir = TempDir::new()?;
+        let default_empty =
+            MarketfeedSecrets::resolve_with_fallback(Some(empty_custom_dir.path()), || {
+                Ok(empty_fallback_dir.path().to_path_buf())
+            })?;
+        assert_that!(&default_empty, eq(&MarketfeedSecrets::default()));
+        Ok(())
+    }
+
+    #[googletest::test]
+    fn from_search_path_surfaces_malformed_json_error_in_custom_dir()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let custom_dir = TempDir::new()?;
+        fs::write(
+            custom_dir.path().join(MarketfeedSecrets::FILE_NAME),
+            "{ invalid json",
+        )?;
+
+        let result = MarketfeedSecrets::from_search_path(custom_dir.path());
+        assert_that!(result, err(pat!(MarketfeedSecretsError::Json { .. })));
+        Ok(())
     }
 }
